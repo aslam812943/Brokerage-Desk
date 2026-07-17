@@ -121,9 +121,15 @@ async function storageSet(key, value) {
     return false;
   } catch (e) { return false; }
 }
-async function storageDelete(key) {
+// `source` scopes a daily delete to just that source's rows for the date (SW vs
+// KOTAK), leaving the other source's report intact. Omit it to wipe the whole date.
+async function storageDelete(key, source) {
   try {
-    if (key.startsWith("daily:")) return apiDelete(`/api/daily/${key.slice("daily:".length)}`);
+    if (key.startsWith("daily:")) {
+      const date = key.slice("daily:".length);
+      const qs = source !== undefined ? `?source=${encodeURIComponent(source)}` : "";
+      return apiDelete(`/api/daily/${date}${qs}`);
+    }
     if (key.startsWith("debit:")) return apiDelete(`/api/debit/${key.slice("debit:".length)}`);
     return false;
   } catch (e) { return false; }
@@ -398,18 +404,35 @@ export default function App() {
 
   const latestDate = dailyDates.length ? dailyDates[dailyDates.length - 1] : null;
 
+  // A save only replaces rows from the same source (SW or Kotak) for that date —
+  // the other source's rows, if any, are kept so both reports coexist.
   const saveDaily = async (isoD, records) => {
+    const src = records[0]?.source || "";
     const total = records.reduce((s, r) => s + r.netBrok, 0);
-    setDailyData((p) => ({ ...p, [isoD]: records }));
+    setDailyData((p) => {
+      const existing = p[isoD] || [];
+      const kept = existing.filter((r) => (r.source || "") !== src);
+      return { ...p, [isoD]: [...kept, ...records] };
+    });
     setDailyDates((p) => (p.includes(isoD) ? p : [...p, isoD].sort()));
-    showToast(`Saved ${isoD} — ${records.length} clients, ${fmtFull(total)} net brokerage`);
+    const srcLabel = src === "KOTAK" ? " (Kotak)" : src === "SW" ? " (SW)" : "";
+    showToast(`Saved ${isoD}${srcLabel} — ${records.length} clients, ${fmtFull(total)} net brokerage`);
     storageSet(`daily:${isoD}`, records);
   };
-  const deleteDaily = async (isoD) => {
-    setDailyData((p) => { const c = { ...p }; delete c[isoD]; return c; });
-    setDailyDates((p) => p.filter((d) => d !== isoD));
-    showToast(`Removed ${isoD}`, "gold");
-    storageDelete(`daily:${isoD}`);
+  // `source` scopes the delete to just that source's rows; omit it to remove the whole date.
+  const deleteDaily = async (isoD, source) => {
+    const scoped = source !== undefined;
+    const remaining = scoped ? (dailyData[isoD] || []).filter((r) => (r.source || "") !== source) : [];
+    setDailyData((p) => {
+      const next = { ...p };
+      if (scoped && remaining.length) next[isoD] = remaining;
+      else delete next[isoD];
+      return next;
+    });
+    if (!scoped || remaining.length === 0) setDailyDates((p) => p.filter((d) => d !== isoD));
+    const srcLabel = source === "KOTAK" ? " Kotak" : source === "SW" ? " SW" : "";
+    showToast(`Removed${srcLabel} ${isoD}`, "gold");
+    storageDelete(`daily:${isoD}`, source);
   };
   const saveDebit = async (isoD, records) => {
     setDebitData((p) => ({ ...p, [isoD]: records }));
@@ -1245,6 +1268,15 @@ function UploadTab({ dailyDates, dailyData, debitDates, debitData, masterByCode,
 
 const KOTAK_SHARE = 0.85;
 
+// Detects "SW" / "KOTAK" from a filename, requiring a non-letter boundary so short
+// tokens like "sw" don't false-positive inside unrelated words (e.g. "answers.xlsx").
+function detectSourceFromFilename(filename) {
+  const base = String(filename || "").toLowerCase();
+  if (/(^|[^a-z0-9])kotak([^a-z0-9]|$)/.test(base)) return "KOTAK";
+  if (/(^|[^a-z0-9])sw([^a-z0-9]|$)/.test(base)) return "SW";
+  return null;
+}
+
 function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleHeader, sampleRows, parseFn, dates, data, onSave, onDelete, valueKey, valueLabel, masterByCode, showToast, hasSource }) {
   const [pending, setPending] = useState(null);
   const [dateInput, setDateInput] = useState("");
@@ -1259,15 +1291,52 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, raw: true });
     const { records: rawRecords, error } = parseFn(rows);
     if (error) { showToast(error, "red"); return; }
-    const records = hasSource && source === "KOTAK"
-      ? rawRecords.map((r) => ({ ...r, [valueKey]: r[valueKey] * KOTAK_SHARE }))
+
+    const detected = hasSource ? detectSourceFromFilename(file.name) : null;
+    const effectiveSource = hasSource ? (detected || source) : null;
+    if (hasSource && detected && detected !== source) setSource(detected);
+
+    const records = hasSource
+      ? rawRecords.map((r) => ({ ...r, [valueKey]: effectiveSource === "KOTAK" ? r[valueKey] * KOTAK_SHARE : r[valueKey], source: effectiveSource }))
       : rawRecords;
     const guessDate = guessDateFromFilename(sheetName.match(/\d{6,8}/) ? sheetName : file.name);
-    setPending({ records, count: records.length, total: records.reduce((s, r) => s + r[valueKey], 0), fileName: file.name });
+    setPending({ records, count: records.length, total: records.reduce((s, r) => s + r[valueKey], 0), fileName: file.name, source: effectiveSource });
     setDateInput(isoDate(guessDate));
   };
-  const confirmSave = async () => { if (!pending || !dateInput) return; await onSave(dateInput, pending.records); setPending(null); };
-  const rows = [...dates].sort().reverse();
+
+  // SW and Kotak reports for the same date coexist (a save only replaces its own
+  // source's rows) — so block only a same-source re-import, which would silently
+  // replace that source's rows a second time.
+  const existingForDate = dateInput ? data[dateInput] : null;
+  const existingSources = new Set((existingForDate || []).map((r) => r.source || ""));
+  const isDuplicateSource = hasSource && !!pending && !!pending.source && existingSources.has(pending.source);
+  const otherExistingSource = hasSource && pending
+    ? [...existingSources].find((s) => s && s !== pending.source)
+    : null;
+
+  const confirmSave = async () => {
+    if (!pending || !dateInput || isDuplicateSource) return;
+    await onSave(dateInput, pending.records);
+    setPending(null);
+  };
+
+  // One row per date when there's no source concept (Debit); one row per
+  // date+source when there is (Daily Brokerage), so SW and Kotak show separately.
+  const sortedDates = [...dates].sort().reverse();
+  const reportRows = hasSource
+    ? sortedDates.flatMap((d) => {
+        const bySource = new Map();
+        for (const r of data[d] || []) {
+          const key = r.source || "—";
+          if (!bySource.has(key)) bySource.set(key, []);
+          bySource.get(key).push(r);
+        }
+        const order = ["SW", "KOTAK", "—"];
+        return [...bySource.keys()]
+          .sort((a, b) => order.indexOf(a) - order.indexOf(b))
+          .map((src) => ({ date: d, source: src, records: bySource.get(src) }));
+      })
+    : sortedDates.map((d) => ({ date: d, source: undefined, records: data[d] || [] }));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1320,32 +1389,51 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <label style={{ fontSize: 12.5, color: INK_SOFT }}>Report date:</label>
               <input type="date" value={dateInput} onChange={(e) => setDateInput(e.target.value)} style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${LINE}` }} />
-              <button onClick={confirmSave} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Save to dashboard</button>
+              <button onClick={confirmSave} disabled={isDuplicateSource} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: isDuplicateSource ? "#C9CDD4" : EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: isDuplicateSource ? "not-allowed" : "pointer" }}>Save to dashboard</button>
               <button onClick={() => setPending(null)} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
-              {dates.includes(dateInput) && <span style={{ fontSize: 12, color: RED }}>This date already has data — saving will overwrite it.</span>}
+              {isDuplicateSource ? (
+                <span style={{ fontSize: 12, color: RED, fontWeight: 700 }}>
+                  A {pending.source === "KOTAK" ? "Kotak" : "SW"} report for this date is already saved — re-importing the same source is blocked. Delete the existing report first if you need to replace it.
+                </span>
+              ) : otherExistingSource && (
+                <span style={{ fontSize: 12, color: INK_SOFT }}>
+                  This date already has a {otherExistingSource === "KOTAK" ? "Kotak" : otherExistingSource === "SW" ? "SW" : "previously saved"} report — it will be kept, and this {pending.source === "KOTAK" ? "Kotak" : "SW"} report will be saved alongside it.
+                </span>
+              )}
             </div>
           </div>
         )}
       </Card>
 
       <Card style={{ padding: 18 }}>
-        <SectionTitle>Uploaded reports ({rows.length})</SectionTitle>
-        {rows.length === 0 ? <div style={{ fontSize: 13.5, color: INK_SOFT }}>Nothing uploaded yet.</div> : (
+        <SectionTitle>Uploaded reports ({reportRows.length})</SectionTitle>
+        {reportRows.length === 0 ? <div style={{ fontSize: 13.5, color: INK_SOFT }}>Nothing uploaded yet.</div> : (
           <div style={{ overflowX: "auto" }}>
             <table>
-              <thead><tr><th>Date</th><th>Clients</th><th>{valueLabel}</th><th>Unmapped</th><th></th></tr></thead>
+              <thead><tr><th>Date</th>{hasSource && <th>Source</th>}<th>Clients</th><th>{valueLabel}</th><th>Unmapped</th><th></th></tr></thead>
               <tbody>
-                {rows.map((d) => {
-                  const recs = data[d] || [];
-                  const total = recs.reduce((s, r) => s + r[valueKey], 0);
-                  const unmapped = recs.filter((r) => !masterByCode[normCode(r.code)]).length;
+                {reportRows.map((row) => {
+                  const total = row.records.reduce((s, r) => s + r[valueKey], 0);
+                  const unmapped = row.records.filter((r) => !masterByCode[normCode(r.code)]).length;
+                  const srcLabel = row.source === "KOTAK" ? "Kotak" : row.source === "SW" ? "SW" : "Unknown";
                   return (
-                    <tr key={d}>
-                      <td style={{ fontWeight: 600 }}>{parseISO(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
-                      <td>{recs.length}</td>
+                    <tr key={`${row.date}-${row.source ?? ""}`}>
+                      <td style={{ fontWeight: 600 }}>{parseISO(row.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                      {hasSource && (
+                        <td>
+                          <span style={{
+                            fontSize: 11.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999,
+                            background: row.source === "KOTAK" ? GOLD_SOFT : row.source === "SW" ? accentSoft : "#EEE",
+                            color: row.source === "KOTAK" ? GOLD : row.source === "SW" ? accent : INK_SOFT,
+                          }}>
+                            {srcLabel}
+                          </span>
+                        </td>
+                      )}
+                      <td>{row.records.length}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(total)}</td>
                       <td>{unmapped > 0 ? <span style={{ color: GOLD, fontWeight: 700 }}>{unmapped}</span> : <span style={{ color: EMERALD }}>0</span>}</td>
-                      <td><button onClick={() => onDelete(d)} title="Remove this date" style={{ border: "none", background: "none", cursor: "pointer", color: RED, display: "flex", alignItems: "center" }}><Trash2 size={15} /></button></td>
+                      <td><button onClick={() => onDelete(row.date, hasSource ? (row.source === "—" ? "" : row.source) : undefined)} title="Remove this report" style={{ border: "none", background: "none", cursor: "pointer", color: RED, display: "flex", alignItems: "center" }}><Trash2 size={15} /></button></td>
                     </tr>
                   );
                 })}

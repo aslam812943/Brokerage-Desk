@@ -37,7 +37,7 @@ export async function GET(req) {
   for (const r of rows) {
     if (allowedCodes && !allowedCodes.has(r.code)) continue;
     if (!byDate[r.date]) byDate[r.date] = [];
-    byDate[r.date].push({ code: r.code, name: r.name, netBrok: r.netBrok });
+    byDate[r.date].push({ code: r.code, name: r.name, netBrok: r.netBrok, source: r.source });
   }
   return NextResponse.json(byDate);
 }

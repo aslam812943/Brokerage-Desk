@@ -9,6 +9,7 @@ const recordSchema = z.object({
   code: z.string().trim().min(1).max(64),
   name: z.string().trim().max(200).default(""),
   netBrok: z.number().finite(),
+  source: z.enum(["SW", "KOTAK", ""]).default(""),
 });
 
 export async function PUT(req, { params }) {
@@ -26,8 +27,16 @@ export async function PUT(req, { params }) {
     return NextResponse.json({ error: "Invalid records", details: parsed.error.flatten() }, { status: 400 });
   }
 
+  // A single upload is always one source's report. Only that source's rows for
+  // this date are replaced — the other source's rows (if any) are left alone,
+  // so SW and Kotak reports for the same date coexist instead of overwriting.
+  const source = parsed.data.length ? parsed.data[0].source : "";
+  if (!parsed.data.every((r) => r.source === source)) {
+    return NextResponse.json({ error: "All records in one upload must share the same source" }, { status: 400 });
+  }
+
   await prisma.$transaction([
-    prisma.dailyRecord.deleteMany({ where: { date } }),
+    prisma.dailyRecord.deleteMany({ where: { date, source } }),
     ...(parsed.data.length
       ? [prisma.dailyRecord.createMany({ data: parsed.data.map((r) => ({ ...r, date })) })]
       : []),
@@ -37,7 +46,7 @@ export async function PUT(req, { params }) {
     userId: session.user.id,
     username: session.user.name,
     action: "UPSERT_DAILY_RECORDS",
-    detail: `date=${date} count=${parsed.data.length}`,
+    detail: `date=${date} source=${source || "(none)"} count=${parsed.data.length}`,
   });
 
   return NextResponse.json({ ok: true, count: parsed.data.length });
@@ -52,13 +61,20 @@ export async function DELETE(req, { params }) {
     return NextResponse.json({ error: "Invalid date" }, { status: 400 });
   }
 
-  const result = await prisma.dailyRecord.deleteMany({ where: { date } });
+  // ?source=SW scopes the delete to just that source's rows for the date;
+  // omitting it deletes everything saved for the date (all sources).
+  const { searchParams } = new URL(req.url);
+  const scoped = searchParams.has("source");
+  const source = searchParams.get("source") ?? undefined;
+  const where = scoped ? { date, source } : { date };
+
+  const result = await prisma.dailyRecord.deleteMany({ where });
 
   await writeAudit({
     userId: session.user.id,
     username: session.user.name,
     action: "DELETE_DAILY_RECORDS",
-    detail: `date=${date} deleted=${result.count}`,
+    detail: `date=${date}${scoped ? ` source=${source || "(none)"}` : " (all sources)"} deleted=${result.count}`,
   });
 
   return NextResponse.json({ ok: true });
