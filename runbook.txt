@@ -1,0 +1,380 @@
+========================================================================
+SHAREWEALTH BROKERAGE DESK — PRODUCTION DEPLOYMENT & SECURITY RUNBOOK
+========================================================================
+Stack: Next.js 14 (App Router, Node server) + NextAuth + Prisma + PostgreSQL
+Data handled: client codes/names, RM/dealer mappings, daily brokerage
+              figures, client debit/outstanding balances, login credentials
+Classification: FINANCIAL / CONFIDENTIAL — treat as regulated data even if
+              no formal regulator applies; brokerage + debit data is
+              sensitive client financial information.
+
+Target host: Hostinger VPS (KVM plan). Shared/Business Hostinger hosting
+             CANNOT run this app — it needs a persistent Node process and
+             a real Postgres instance, not just a PHP file host.
+
+------------------------------------------------------------------------
+0. BEFORE YOU START — DECISIONS TO LOCK IN
+------------------------------------------------------------------------
+[ ] Domain name pointed at Hostinger VPS (A record -> VPS IP)
+[ ] Confirm who are the intended ADMIN users vs VIEWER users
+[ ] Confirm data retention policy: how long do daily brokerage/debit
+    records need to be kept online vs archived/deleted
+[ ] Confirm who is authorized to pull DB backups off the server
+[ ] Decide backup destination (must be OFF the VPS — see section 6)
+
+------------------------------------------------------------------------
+1. VPS PROVISIONING
+------------------------------------------------------------------------
+1.1 Order Hostinger VPS (KVM 2 is a safe minimum: 2 vCPU / 8GB RAM).
+    Choose Ubuntu 22.04 LTS as the OS image.
+
+1.2 First login — lock down SSH immediately:
+    ssh root@<VPS_IP>
+    adduser deploy
+    usermod -aG sudo deploy
+    rsync --archive --chown=deploy:deploy ~/.ssh /home/deploy
+
+    Edit /etc/ssh/sshd_config:
+      PermitRootLogin no
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+      Port 2222                (optional — obscurity only, not real security)
+    systemctl restart sshd
+
+    From now on, only connect as `deploy` using an SSH key. Never re-enable
+    root password login.
+
+1.3 Firewall (UFW):
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw allow 2222/tcp     # or 22 if you kept the default port
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw enable
+    # Do NOT open 5432/5433 (Postgres) or 3000 (Next.js) to the internet.
+    # Postgres and the app should only be reachable via localhost + Nginx.
+
+1.4 Fail2ban (blocks brute-force SSH/HTTP attempts):
+    apt install fail2ban -y
+    systemctl enable --now fail2ban
+
+1.5 Unattended security updates:
+    apt install unattended-upgrades -y
+    dpkg-reconfigure --priority=low unattended-upgrades
+
+------------------------------------------------------------------------
+2. RUNTIME SETUP (Node, Postgres, PM2, Nginx)
+------------------------------------------------------------------------
+2.1 Install Node.js LTS (match your local dev version, Node 20.x):
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    apt install -y nodejs
+    node -v && npm -v
+
+2.2 Install Docker + Compose (you already have docker-compose.yml for
+    Postgres — reuse it verbatim on the VPS):
+    curl -fsSL https://get.docker.com | sh
+    usermod -aG docker deploy
+    apt install docker-compose-plugin -y
+
+2.3 Deploy Postgres via your existing docker-compose.yml:
+    - Copy docker-compose.yml to the server.
+    - CHANGE the default POSTGRES_PASSWORD before first boot — do not
+      ship "brokerage/brokerage" to production. Generate with:
+        openssl rand -base64 24
+    - Do NOT publish port 5433 to 0.0.0.0. Bind to localhost only:
+        ports:
+          - "127.0.0.1:5433:5432"
+    - docker compose up -d
+
+2.4 Clone/copy the app to the server (e.g. /home/deploy/app), then:
+    npm ci
+    cp .env.example .env
+    # Fill in .env with PRODUCTION values (see section 3 below)
+    npx prisma migrate deploy
+    npm run db:seed        # only on first deploy, then rotate the seeded
+                            # passwords immediately via the app UI
+    npm run build
+
+2.5 Run with PM2 (keeps the app alive, restarts on crash/reboot):
+    npm install -g pm2
+    pm2 start npm --name brokerage-desk -- start
+    pm2 save
+    pm2 startup            # follow the printed instructions to enable
+                            # PM2 on system boot
+
+2.6 Nginx as reverse proxy + TLS termination:
+    apt install nginx -y
+    # Create /etc/nginx/sites-available/brokerage-desk pointing
+    # server_name to your domain, proxy_pass to http://127.0.0.1:3000
+    # (standard Next.js reverse-proxy config: forward Host, X-Forwarded-*).
+    ln -s /etc/nginx/sites-available/brokerage-desk /etc/nginx/sites-enabled/
+    nginx -t && systemctl reload nginx
+
+2.7 TLS via Let's Encrypt:
+    apt install certbot python3-certbot-nginx -y
+    certbot --nginx -d yourdomain.com
+    # Certbot auto-configures HTTPS redirect + sets up renewal timer.
+    certbot renew --dry-run     # confirm auto-renewal works
+
+------------------------------------------------------------------------
+3. ENVIRONMENT VARIABLES — PRODUCTION VALUES
+------------------------------------------------------------------------
+.env on the server must NOT reuse any values from local dev / this repo's
+committed .env.example. Rotate everything:
+
+  DATABASE_URL      -> new strong Postgres password, host 127.0.0.1
+  NEXTAUTH_SECRET    -> `openssl rand -base64 32`, unique to production
+  NEXTAUTH_URL       -> https://yourdomain.com  (exact, with https)
+  SEED_ADMIN_PASSWORD / SEED_VIEWER_PASSWORD
+                     -> strong one-time passwords, used only for the
+                        initial `npm run db:seed` run
+
+[ ] .env is in .gitignore (verify — never commit real secrets)
+[ ] .env file permissions: chmod 600 .env, owned by deploy user only
+[ ] After seeding, log in as admin and change the seeded passwords, or
+    delete the seed values from .env / rotate SEED_* immediately
+[ ] Store a copy of production secrets in a password manager (not chat,
+    not email, not a plaintext file synced anywhere)
+
+------------------------------------------------------------------------
+4. APPLICATION-LEVEL SECURITY HARDENING
+------------------------------------------------------------------------
+This app already has: NextAuth session auth, ADMIN/VIEWER role checks on
+API routes (lib/apiAuth.js), and basic login rate-limiting
+(lib/rateLimit.js, 8 attempts / 15 min). Before going live, verify/harden:
+
+4.1 Session/auth
+    [ ] Confirm middleware.js matcher actually covers every page that
+        shows client/brokerage data (currently excludes /login,
+        /api/auth, static assets — re-check after any new route is added)
+    [ ] Set NextAuth session maxAge to something reasonable for a
+        financial-data internal tool (e.g. 8-12 hours, not the default
+        30 days) in lib/authOptions.js
+    [ ] Ensure cookies are Secure + HttpOnly + SameSite=Lax (NextAuth
+        default does this over HTTPS — confirm NEXTAUTH_URL is https://
+        in production, otherwise cookies won't be marked Secure)
+
+4.2 Authorization
+    [ ] Every /api/* route that reads or writes client/brokerage/debit
+        data must call requireSession() or requireAdmin() — grep for
+        any route missing this before launch
+    [ ] Confirm VIEWER role genuinely cannot hit write endpoints
+        (PUT/DELETE on /api/master, /api/daily/[date], /api/debit/[date],
+        /api/targets, /api/dealers, /api/users) — these should all be
+        requireAdmin()
+
+4.3 Input validation
+    [ ] Confirm zod schemas exist on every PUT/POST route (already seen
+        on /api/daily/[date]) — extend the same pattern to any route
+        that doesn't have it yet
+    [ ] File upload parsing (xlsx/csv) should cap file size and row
+        count to prevent a malicious/oversized file from hanging the
+        server (check Upload tab handlers)
+
+4.4 Rate limiting
+    [ ] lib/rateLimit.js is in-memory — this resets on every deploy/
+        restart and doesn't work across multiple app instances. Fine
+        for a single PM2 instance; if you ever scale to multiple
+        instances/containers, move this to Redis
+    [ ] Consider adding rate limiting to the API routes too, not just
+        login, to blunt scripted abuse
+
+4.5 Security headers (add via next.config.mjs or Nginx)
+    [ ] Strict-Transport-Security (HSTS) — force HTTPS
+    [ ] X-Content-Type-Options: nosniff
+    [ ] X-Frame-Options: DENY (prevent clickjacking on login/dashboard)
+    [ ] Content-Security-Policy — at minimum restrict script-src to self
+    [ ] Referrer-Policy: strict-origin-when-cross-origin
+
+4.6 Dependency hygiene
+    [ ] npm audit before every deploy; fix high/critical findings
+    [ ] Note: package.json pulls xlsx directly from a CDN tarball URL
+        rather than npm registry — pin it to a specific version/hash
+        and periodically re-verify the source is still trustworthy,
+        since SheetJS's npm package has had supply-chain concerns
+        historically
+    [ ] Keep next, next-auth, prisma on patched versions — subscribe
+        to their security advisories
+
+4.7 Logging & error handling
+    [ ] Ensure API error responses never leak stack traces, SQL, or
+        internal paths to the client in production (Next.js does this
+        by default in production builds — just don't override it)
+    [ ] Do not log full request bodies containing client financial data
+        to disk/console in production; if you add logging, redact
+        debit/brokerage values and client PII
+
+------------------------------------------------------------------------
+5. VAPT (VULNERABILITY ASSESSMENT & PENETRATION TESTING)
+------------------------------------------------------------------------
+Given this app holds client financial data (brokerage + debit balances),
+treat VAPT as a pre-launch gate, not a nice-to-have.
+
+5.1 Scope for a VAPT engagement (internal or third-party):
+    - Authentication: login brute-force resistance, session fixation,
+      credential stuffing resilience, password policy strength
+    - Authorization: privilege escalation VIEWER -> ADMIN via direct
+      API calls (bypassing UI), IDOR on client codes / dealer records
+    - Injection: SQL injection (Prisma parameterizes queries by default,
+      but verify no raw queries exist — grep for $queryRaw/$executeRaw),
+      XSS via client names/codes rendered from uploaded spreadsheets
+    - File upload abuse: malicious CSV/XLSX payloads, zip bombs,
+      formula injection in spreadsheet cells (CSV injection risk when
+      exported data is later opened in Excel)
+    - Transport: TLS configuration grade (aim for A on SSL Labs),
+      certificate validity, HSTS presence
+    - Infrastructure: open ports beyond 80/443/SSH, exposed Postgres,
+      exposed PM2/Nginx status pages, default credentials anywhere
+    - Business logic: can a VIEWER trigger a data wipe or bulk edit
+      endpoint intended for ADMIN only; can period-filter params be
+      manipulated to leak other dealers' data
+
+5.2 Cadence
+    [ ] Full VAPT before go-live
+    [ ] Re-run after any significant feature change (new API routes,
+        auth changes, file upload changes)
+    [ ] At minimum an annual re-test even with no major changes
+    [ ] Run `npm audit` / Snyk/Dependabot continuously, not just at
+        VAPT time
+
+5.3 Low-cost first pass you can do yourself before a paid VAPT:
+    [ ] OWASP ZAP or Burp Suite Community — automated scan against a
+        staging copy (never scan production without a maintenance
+        window and backup)
+    [ ] Manually attempt: log in as VIEWER, then call admin-only API
+        routes directly with curl/Postman using the VIEWER session
+        cookie — confirm 403s
+    [ ] Manually attempt SQL/CSV injection in the Client Code / Name
+        fields via a crafted upload file
+    [ ] testssl.sh or ssllabs.com/ssltest against the live domain
+
+5.4 Engage a professional VAPT vendor for the pre-launch pass if this
+    tool will be used beyond a small trusted internal team — internal
+    self-testing catches the obvious issues but not everything.
+
+------------------------------------------------------------------------
+6. BACKUPS & DISASTER RECOVERY
+------------------------------------------------------------------------
+6.1 Automated Postgres backups — daily minimum, given this is financial
+    data that would be painful to lose:
+    Example cron (as deploy user), pg_dump inside the container:
+      0 2 * * * docker exec dealerterminal-db-1 pg_dump -U brokerage \
+        brokerage | gzip > /home/deploy/backups/brokerage_$(date +\%F).sql.gz
+
+6.2 [ ] Backups must be copied OFF the VPS — same-server backups don't
+    survive disk failure or a compromised host. Push nightly to:
+    - Hostinger's own backup/snapshot feature (enable VPS snapshots), AND
+    - a separate off-site location (S3-compatible bucket, another
+      provider, etc.)
+
+6.3 [ ] Retention: keep at least 30 daily backups + 6 monthly archives,
+    or whatever your data retention policy (section 0) specifies
+
+6.4 [ ] Test restore procedure at least once before go-live and every
+    quarter after — an untested backup is not a backup:
+      gunzip -c backup.sql.gz | docker exec -i dealerterminal-db-1 \
+        psql -U brokerage brokerage
+
+6.5 [ ] Document who has access to backup files — they contain full
+    client financial data and must be treated with the same
+    confidentiality as production DB access
+
+------------------------------------------------------------------------
+7. DATA PRIVACY
+------------------------------------------------------------------------
+This app stores: client codes, client names, RM names, dealer
+assignments, daily net brokerage figures per client, and client debit/
+outstanding balances. This is sensitive financial data about real
+people/entities even without formal PII like phone/email in the current
+schema.
+
+7.1 Access control principle
+    [ ] Apply least-privilege: only give ADMIN role to people who need
+        to upload/edit data; everyone else gets VIEWER
+    [ ] Review the user list (/api/users) periodically — remove access
+        for anyone who no longer needs it (offboarding checklist item)
+    [ ] No shared logins — every human gets their own account so
+        actions are attributable
+
+7.2 Data minimization
+    [ ] Don't collect/store more than needed. Current schema is
+        already fairly minimal (code/name/rm/dealer/branch + figures) —
+        keep it that way, resist adding fields like PAN/Aadhaar/phone
+        unless there's a real business need, since each additional
+        field increases breach impact
+
+7.3 Data at rest
+    [ ] Postgres data directory lives in a Docker volume on the VPS
+        disk — if Hostinger offers disk encryption at the VPS/host
+        level, enable it. Otherwise consider filesystem-level
+        encryption (LUKS) for the volume holding pgdata
+    [ ] Backups (section 6) must also be encrypted at rest if stored
+        off-site (most S3-compatible providers support SSE by default
+        — confirm it's on)
+
+7.4 Data in transit
+    [ ] All access to the app must be over HTTPS only — no plain HTTP
+        fallback (Certbot/Nginx should redirect 80 -> 443)
+    [ ] DB connection from app to Postgres is over localhost (127.0.0.1)
+        so it never traverses the network unencrypted — keep it that
+        way, don't expose Postgres externally (section 1.3 / 2.3)
+
+7.5 Data subject / client rights
+    [ ] Define an internal process for: a dealer/client asking "what
+        data do you hold on me" or "delete my historical brokerage
+        records" — even if not legally mandated, having a documented
+        process protects the business
+    [ ] Master client deletion in the app currently keeps historical
+        daily brokerage/debit records and shows them as "Unmapped"
+        (per existing UI copy) — decide if that's the correct retention
+        behavior for your privacy policy, or if full deletion is needed
+        for compliance in some cases
+
+7.6 Confidentiality / internal policy
+    [ ] Anyone with VPS SSH access effectively has access to raw DB
+        data — restrict SSH key distribution to as few people as
+        possible and log/audit who has keys
+    [ ] Prisma Studio (npm run db:studio) gives full unauthenticated
+        DB browsing if exposed — NEVER run this on the production VPS
+        bound to a public interface; only run it via SSH tunnel to
+        localhost when needed for debugging, and close it after
+
+7.7 If any client is a regulated entity or this data ever falls under
+    a specific regulatory regime (e.g. SEBI-related recordkeeping
+    requirements for brokerage data in India), consult a compliance
+    professional — this runbook covers general security/privacy
+    hygiene, not regulatory sign-off.
+
+------------------------------------------------------------------------
+8. GO-LIVE CHECKLIST (final gate before pointing DNS at production)
+------------------------------------------------------------------------
+[ ] All section 3 secrets rotated from defaults, stored in password
+    manager, .env permissions locked down
+[ ] Firewall confirmed: only 80/443/SSH reachable from internet
+[ ] HTTPS working, HSTS enabled, SSL Labs grade A
+[ ] Security headers present (section 4.5)
+[ ] npm audit clean (no high/critical)
+[ ] Admin/Viewer role separation manually verified via direct API calls
+[ ] Automated daily backups running AND off-site copy verified AND
+    a test restore has succeeded at least once
+[ ] Self-assessment VAPT pass complete (section 5.3); professional
+    VAPT scheduled or complete if user base extends beyond a small
+    trusted team
+[ ] Seeded admin/viewer passwords changed from the seed values
+[ ] Prisma Studio confirmed NOT exposed on any public interface
+[ ] Data retention & access policy documented (sections 0, 7)
+[ ] Monitoring: PM2 configured to auto-restart on crash
+    (pm2 startup + pm2 save), basic uptime monitoring in place
+    (e.g. UptimeRobot hitting the login page)
+
+------------------------------------------------------------------------
+9. ONGOING OPERATIONAL CADENCE
+------------------------------------------------------------------------
+Daily    - automated DB backup runs (verify via cron log / alert)
+Weekly   - review app + Nginx + auth logs for anomalies
+Monthly  - npm audit / dependency update pass; review user access list
+Quarterly- test backup restore; review firewall rules; rotate
+           NEXTAUTH_SECRET and force re-login if warranted
+Annually - full VAPT re-test; review this runbook for drift against
+           actual deployed configuration
+========================================================================

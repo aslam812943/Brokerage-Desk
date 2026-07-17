@@ -1,0 +1,33 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Program Files/PostgreSQL/16/data/**)",
+      "Bash(grep -v \"^$\")",
+      "Bash(cp \"/c/Program Files/PostgreSQL/16/data/pg_hba.conf\" \"/c/Program Files/PostgreSQL/16/data/pg_hba.conf.bak\" 2>&1 *)",
+      "PowerShell(Restart-Service -Name postgresql-x64-16 -Force -Confirm:$false)",
+      "PowerShell(Get-Service postgresql-x64-16)",
+      "Bash(\"/c/Program Files/PostgreSQL/16/bin/pg_ctl.exe\" reload -D \"/c/Program Files/PostgreSQL/16/data\")",
+      "Bash(\"/c/Program Files/PostgreSQL/16/bin/psql.exe\" \"postgresql://brokerage:brokerage@127.0.0.1:5433/brokerage\" -c \"SELECT 1;\")",
+      "Bash(\"/c/Program Files/PostgreSQL/16/bin/psql.exe\" -h 127.0.0.1 -p 5433 -U brokerage -d brokerage -c \"SELECT 1;\")",
+      "Bash(export PGPASSWORD='brokerage')",
+      "Bash(curl -s -o /dev/null -w \"Status: %{http_code}\\\\nRedirect: %{redirect_url}\\\\n\" \"http://localhost:3001/\")",
+      "Bash(curl -s -o /dev/null -w \"Login page status: %{http_code}\\\\n\" \"http://localhost:3001/login\")",
+      "Bash(curl -s -o /dev/null -w \"Unauthed API status: %{http_code}\\\\n\" \"http://localhost:3001/api/master\")",
+      "Bash(curl -s -i \"http://localhost:3001/api/master\")",
+      "Bash(tasklist //FI \"PID eq 22260\")",
+      "Bash(tasklist //FI \"IMAGENAME eq node.exe\")",
+      "Bash(taskkill //F //PID 6020)",
+      "Bash(taskkill //F //PID 39380)",
+      "Bash(curl -s -o /dev/null -w \"Status: %{http_code}\\\\n\" \"http://localhost:4100/\")",
+      "Bash(curl -s -o /dev/null -w \"Login page: %{http_code}\\\\n\" \"http://localhost:4100/login\")",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(npx next *)",
+      "Bash(cp \"C:\\\\Users\\\\HARIGO~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-Harigovind-Desktop-sites-dealerterminal\\\\fec82196-dfd4-4646-bf49-546d5e60882c\\\\scratchpad\\\\shot.js\" \"c:\\\\Users\\\\Harigovind\\\\Desktop\\\\sites\\\\dealerterminal\\\\shot_temp.js\")",
+      "Bash(node shot_temp.js)"
+    ],
+    "additionalDirectories": [
+      "C:\\Program Files\\PostgreSQL\\16\\data"
+    ]
+  }
+}

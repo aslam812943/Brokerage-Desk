@@ -1,0 +1,88 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  VIEWER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  role         Role     @default(VIEWER)
+  createdAt    DateTime @default(now())
+}
+
+model MasterClient {
+  code      String   @id
+  name      String   @default("")
+  rm        String   @default("")
+  dealer    String   @default("")
+  branch    String   @default("")
+  updatedAt DateTime @updatedAt
+}
+
+model Dealer {
+  name      String   @id
+  createdAt DateTime @default(now())
+}
+
+model DailyRecord {
+  id       String @id @default(cuid())
+  date     String
+  code     String
+  name     String @default("")
+  netBrok  Float  @default(0)
+
+  @@index([date])
+  @@index([code])
+}
+
+model DebitRecord {
+  id    String @id @default(cuid())
+  date  String
+  code  String
+  name  String @default("")
+  debit Float  @default(0)
+
+  @@index([date])
+  @@index([code])
+}
+
+model Targets {
+  id            Int    @id @default(1)
+  monthly       Float  @default(0)
+  dealerMonthly Json   @default("{}")
+}
+
+model DealerTask {
+  id     String  @id @default(cuid())
+  dealer String
+  month  String
+  slot   Int
+  text   String  @default("")
+  done   Boolean @default(false)
+
+  @@unique([dealer, month, slot])
+  @@index([dealer, month])
+}
+
+// Immutable audit trail for all destructive / sensitive operations
+model AuditLog {
+  id        String   @id @default(cuid())
+  timestamp DateTime @default(now())
+  userId    String
+  username  String
+  action    String   // e.g. "DELETE_DAILY_RECORDS", "WIPE_MASTER_CLIENTS"
+  detail    String   @default("") // JSON or human-readable context
+
+  @@index([timestamp])
+  @@index([userId])
+}

@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: brokerage
+      POSTGRES_PASSWORD: brokerage
+      POSTGRES_DB: brokerage
+    ports:
+      - "5433:5432"
+    volumes:
+      - dealerterminal_pgdata:/var/lib/postgresql/data
+
+volumes:
+  dealerterminal_pgdata:
