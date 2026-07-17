@@ -805,15 +805,33 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
 
       <Card style={{ padding: 18 }}>
         <SectionTitle>Top 10 clients by net brokerage ({period})</SectionTitle>
-        <ResponsiveContainer width="100%" height={280}>
-          <BarChart data={topClients} layout="vertical" margin={{ top: 4, right: 20, left: 10, bottom: 4 }}>
-            <CartesianGrid stroke={LINE} horizontal={false} />
-            <XAxis type="number" tickFormatter={fmtINR} tick={{ fontSize: 11, fill: INK_SOFT }} axisLine={false} tickLine={false} />
-            <YAxis type="category" dataKey="name" width={150} tick={{ fontSize: 11.5, fill: INK }} axisLine={false} tickLine={false} />
-            <Tooltip formatter={(v) => fmtFull(v)} contentStyle={{ borderRadius: 10, border: `1px solid ${LINE}`, fontSize: 12.5 }} />
-            <Bar dataKey="value" fill={TEAL} radius={[0, 6, 6, 0]} name="Net Brokerage" />
-          </BarChart>
-        </ResponsiveContainer>
+        {topClients.length === 0 ? (
+          <div style={{ fontSize: 13.5, color: INK_SOFT, padding: "12px 4px" }}>No brokerage data for this period yet.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {topClients.map((c, i) => {
+              const maxVal = topClients[0].value || 1;
+              const pct = Math.max((c.value / maxVal) * 100, 2);
+              return (
+                <div key={c.code} style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 2px", borderBottom: i < topClients.length - 1 ? `1px solid ${LINE}` : "none" }}>
+                  <div style={{ width: 18, flex: "0 0 auto", fontSize: 12, fontWeight: 700, color: INK_SOFT, textAlign: "right" }}>{i + 1}</div>
+                  <div
+                    title={c.name || c.code}
+                    style={{ width: 150, flex: "0 0 150px", fontSize: 12.5, fontWeight: 600, color: INK, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                  >
+                    {c.name || c.code}
+                  </div>
+                  <div style={{ flex: "1 1 auto", minWidth: 0, height: 8, borderRadius: 999, background: TEAL_SOFT, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${pct}%`, borderRadius: 999, background: TEAL }} />
+                  </div>
+                  <div style={{ flex: "0 0 auto", minWidth: 88, fontSize: 12.5, fontWeight: 700, color: INK, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {fmtFull(c.value)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </Card>
     </div>
   );
