@@ -10,7 +10,7 @@ import {
   LayoutDashboard, UploadCloud, Users, Target, TrendingUp,
   Calendar, Trash2, Plus, Search, AlertTriangle, CheckCircle2,
   FileSpreadsheet, Building2, IndianRupee, Pencil, X, Check,
-  ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks
+  ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks, KeyRound
 } from "lucide-react";
 
 /* ---------- design tokens ---------- */
@@ -345,9 +345,10 @@ export default function App() {
   const [debitDates, setDebitDates] = useState([]);
   const [debitData, setDebitData] = useState({});
   const [targets, setTargets] = useState({ monthly: 0, dealerMonthly: {} });
-  const { data: session } = useSession();
+  const { data: session, update: updateSession } = useSession();
   const role = session?.user?.role === "ADMIN" ? "admin" : "user";
   const username = session?.user?.name || "";
+  const mustChangePassword = !!session?.user?.mustChangePassword;
   const [toast, setToast] = useState(null);
 
   const showToast = (msg, tone = "emerald") => { setToast({ msg, tone }); setTimeout(() => setToast(null), 3200); };
@@ -517,6 +518,18 @@ export default function App() {
     return <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", background: BG, fontFamily: "Inter, sans-serif", color: INK_SOFT }}>Loading brokerage data…</div>;
   }
 
+  if (mustChangePassword) {
+    return (
+      <ForcedPasswordChange
+        username={username}
+        onDone={async () => {
+          await updateSession();
+          showToast("Password updated");
+        }}
+      />
+    );
+  }
+
   const NAV = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, color: BLUE, adminOnly: false },
     { id: "clients", label: "Clients", icon: Users, color: TEAL, adminOnly: false },
@@ -626,6 +639,7 @@ export default function App() {
 
 function RoleSwitch({ role, username }) {
   const [open, setOpen] = useState(false);
+  const [changingPw, setChangingPw] = useState(false);
   return (
     <div style={{ position: "relative" }}>
       <button onClick={() => setOpen((o) => !o)} style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.06)", color: "#fff", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
@@ -636,11 +650,96 @@ function RoleSwitch({ role, username }) {
           <div style={{ padding: "8px 10px", fontSize: 12.5, color: INK_SOFT }}>
             Signed in as <strong style={{ color: INK }}>{username}</strong> — {role === "admin" ? "full edit access" : "read-only dashboard"}
           </div>
+          <button onClick={() => { setChangingPw(true); setOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, color: INK, textAlign: "left" }}>
+            <KeyRound size={14} /> Change password
+          </button>
           <button onClick={() => signOut({ callbackUrl: "/login" })} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, color: RED, textAlign: "left" }}>
             <X size={14} /> Sign out
           </button>
         </div>
       )}
+      {changingPw && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(14,20,32,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={() => setChangingPw(false)}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 360 }}>
+            <ChangePasswordForm onCancel={() => setChangingPw(false)} onSuccess={() => setChangingPw(false)} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChangePasswordForm({ onSuccess, onCancel }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (newPassword.length < 8) { setError("New password must be at least 8 characters."); return; }
+    if (newPassword !== confirmPassword) { setError("New passwords don't match."); return; }
+    setSubmitting(true);
+    try {
+      const res = await fetch("/api/users/password", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) { setError(data?.error || "Couldn't change password"); return; }
+      onSuccess?.();
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={onSubmit} style={{ background: "#fff", border: `1px solid ${LINE}`, borderRadius: 14, padding: 24, boxShadow: "0 12px 40px rgba(14,20,32,0.18)" }}>
+      <div style={{ fontSize: 16, fontWeight: 800, color: INK, marginBottom: 4 }}>Change password</div>
+      <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 18 }}>At least 8 characters.</div>
+
+      <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: INK_SOFT, marginBottom: 6 }}>Current password</label>
+      <input type="password" autoFocus value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} autoComplete="current-password" />
+
+      <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: INK_SOFT, margin: "14px 0 6px" }}>New password</label>
+      <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} autoComplete="new-password" />
+
+      <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: INK_SOFT, margin: "14px 0 6px" }}>Confirm new password</label>
+      <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} autoComplete="new-password" />
+
+      {error && <div style={{ marginTop: 12, fontSize: 12.5, color: RED }}>{error}</div>}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+        <button type="submit" disabled={submitting} style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: NAVY, color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: submitting ? "default" : "pointer", opacity: submitting ? 0.7 : 1 }}>
+          {submitting ? "Saving…" : "Save password"}
+        </button>
+        {onCancel && (
+          <button type="button" onClick={onCancel} style={{ padding: "10px 16px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>
+            Cancel
+          </button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+function ForcedPasswordChange({ username, onDone }) {
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: BG, fontFamily: "Inter, sans-serif", padding: 16, boxSizing: "border-box" }}>
+      <div style={{ width: "100%", maxWidth: 360 }}>
+        <div style={{ textAlign: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 18, fontWeight: 800, color: INK }}>Set your password</div>
+          <div style={{ fontSize: 13, color: INK_SOFT, marginTop: 4 }}>
+            {username ? <>Welcome, <strong>{username}</strong>. </> : null}
+            You're signing in with a temporary password — set your own before continuing.
+          </div>
+        </div>
+        <ChangePasswordForm onSuccess={onDone} />
+      </div>
     </div>
   );
 }
@@ -1489,6 +1588,12 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
 function UsersSection({ onWipeUsers, showToast }) {
   const [users, setUsers] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [newRole, setNewRole] = useState("VIEWER");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [reveal, setReveal] = useState(null); // { username, tempPassword }
 
   const load = async () => {
     setLoading(true);
@@ -1508,23 +1613,115 @@ function UsersSection({ onWipeUsers, showToast }) {
     load();
   };
 
+  const submitNewUser = async () => {
+    setCreateError("");
+    if (!newUsername.trim()) return;
+    setCreating(true);
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: newUsername.trim(), role: newRole }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setCreateError(data?.error || "Couldn't create user");
+        return;
+      }
+      setReveal({ username: data.username, tempPassword: data.tempPassword });
+      setNewUsername("");
+      setNewRole("VIEWER");
+      setAdding(false);
+      load();
+    } catch (e) {
+      setCreateError("Couldn't create user");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const copyTempPassword = async () => {
+    if (!reveal) return;
+    try {
+      await navigator.clipboard.writeText(reveal.tempPassword);
+      showToast("Password copied to clipboard");
+    } catch (e) {
+      // clipboard API unavailable — password is still visible to copy manually
+    }
+  };
+
   const otherUserCount = (users || []).length > 0 ? users.length - 1 : 0;
 
   return (
     <>
+      {reveal && (
+        <Card style={{ padding: 18, border: `1px solid ${GOLD}`, background: GOLD_SOFT }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "#7A5A14", marginBottom: 4 }}>
+                Account created for <strong>{reveal.username}</strong>
+              </div>
+              <div style={{ fontSize: 12.5, color: "#7A5A14", marginBottom: 10 }}>
+                Share this temporary password with them now — it won't be shown again. They'll be required to set their own password the first time they sign in.
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <code style={{ background: "#fff", border: `1px solid ${GOLD}`, borderRadius: 8, padding: "8px 12px", fontSize: 14, fontWeight: 700, letterSpacing: 0.5 }}>
+                  {reveal.tempPassword}
+                </code>
+                <button onClick={copyTempPassword} style={{ padding: "8px 12px", borderRadius: 8, border: `1px solid ${GOLD}`, background: "#fff", color: GOLD, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+                  Copy
+                </button>
+              </div>
+            </div>
+            <button onClick={() => setReveal(null)} style={{ border: "none", background: "none", cursor: "pointer", color: "#7A5A14" }}>
+              <X size={16} />
+            </button>
+          </div>
+        </Card>
+      )}
+
       <Card style={{ padding: 20 }}>
-        <SectionTitle>User accounts</SectionTitle>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+          <SectionTitle>User accounts</SectionTitle>
+          <button onClick={() => { setAdding((a) => !a); setCreateError(""); }} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: "none", background: EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+            <Plus size={15} /> Add user
+          </button>
+        </div>
+
+        {adding && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${LINE}` }}>
+            <input
+              placeholder="Username"
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submitNewUser(); }}
+              style={inputStyle}
+              autoFocus
+            />
+            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} style={inputStyle}>
+              <option value="VIEWER">Viewer</option>
+              <option value="ADMIN">Admin</option>
+            </select>
+            <button onClick={submitNewUser} disabled={creating || !newUsername.trim()} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: creating || !newUsername.trim() ? "#B7E4CE" : EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: creating || !newUsername.trim() ? "not-allowed" : "pointer" }}>
+              {creating ? "Creating…" : "Create"}
+            </button>
+            {createError && <span style={{ fontSize: 12.5, color: RED, fontWeight: 600 }}>{createError}</span>}
+          </div>
+        )}
+
         {loading ? (
           <div style={{ fontSize: 13, color: INK_SOFT }}>Loading…</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table>
-              <thead><tr><th>Username</th><th>Role</th><th>Created</th></tr></thead>
+              <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th></tr></thead>
               <tbody>
                 {(users || []).map((u) => (
                   <tr key={u.id}>
                     <td style={{ fontWeight: 600 }}>{u.username}</td>
                     <td>{u.role === "ADMIN" ? <Badge text="Admin" color={EMERALD} /> : <Badge text="Viewer" color={BLUE} />}</td>
+                    <td>{u.mustChangePassword ? <Badge text="Pending first login" color={GOLD} /> : <span style={{ color: INK_SOFT, fontSize: 12 }}>Active</span>}</td>
                     <td style={{ color: INK_SOFT }}>{new Date(u.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
                   </tr>
                 ))}
@@ -1537,7 +1734,7 @@ function UsersSection({ onWipeUsers, showToast }) {
       {!loading && otherUserCount > 0 && (
         <DangerZone
           title="Remove all other users"
-          description={`Permanently deletes all ${otherUserCount} other user account(s). Your own account is always kept, so you can't be locked out. Removed users will need a new account created via the seed script.`}
+          description={`Permanently deletes all ${otherUserCount} other user account(s). Your own account is always kept, so you can't be locked out.`}
           confirmWord="DELETE"
           onConfirm={handleWipe}
         />
