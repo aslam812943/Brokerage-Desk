@@ -3,7 +3,10 @@ import { prisma } from "../../../lib/prisma";
 import { requireSession } from "../../../lib/apiAuth";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const MAX_RECORDS = 10_000; // Hard cap — prevents unbounded DB reads
+// Hard cap — prevents unbounded DB reads. A single day's upload (SW + Kotak,
+// ~2-3k clients each) can already be several thousand rows, so this needs to
+// stay well above realistic multi-month totals.
+const MAX_RECORDS = 500_000;
 
 export async function GET(req) {
   const { session, response } = await requireSession();
@@ -27,9 +30,11 @@ export async function GET(req) {
   if (from && ISO_DATE.test(from)) where.date = { ...where.date, gte: from };
   if (to   && ISO_DATE.test(to))   where.date = { ...where.date, lte: to };
 
+  // Sort newest-first so that if the cap is ever hit, it's the oldest
+  // (least relevant) dates that get dropped, not the most recent uploads.
   const rows = await prisma.debitRecord.findMany({
     where,
-    orderBy: { date: "asc" },
+    orderBy: { date: "desc" },
     take: MAX_RECORDS,
   });
 
