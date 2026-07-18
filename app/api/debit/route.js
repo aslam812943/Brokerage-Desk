@@ -6,7 +6,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // Hard cap — prevents unbounded DB reads. A single day's upload (SW + Kotak,
 // ~2-3k clients each) can already be several thousand rows, so this needs to
 // stay well above realistic multi-month totals.
-const MAX_RECORDS = 500_000;
+const MAX_RECORDS = 5_000_000;
 
 export async function GET(req) {
   const { session, response } = await requireSession();
