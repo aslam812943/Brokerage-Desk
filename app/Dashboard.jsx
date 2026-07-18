@@ -1651,6 +1651,20 @@ function UsersSection({ onWipeUsers, showToast }) {
     }
   };
 
+  const [resettingId, setResettingId] = useState(null);
+  const resetPassword = async (u) => {
+    setResettingId(u.id);
+    try {
+      const res = await fetch(`/api/users/${u.id}`, { method: "PATCH", credentials: "same-origin" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) { showToast(data?.error || "Couldn't reset password", "red"); return; }
+      setReveal({ username: data.username, tempPassword: data.tempPassword, reset: true });
+      load();
+    } finally {
+      setResettingId(null);
+    }
+  };
+
   const otherUserCount = (users || []).length > 0 ? users.length - 1 : 0;
 
   return (
@@ -1660,10 +1674,10 @@ function UsersSection({ onWipeUsers, showToast }) {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
             <div>
               <div style={{ fontSize: 13.5, fontWeight: 700, color: "#7A5A14", marginBottom: 4 }}>
-                Account created for <strong>{reveal.username}</strong>
+                {reveal.reset ? "Password reset for " : "Account created for "}<strong>{reveal.username}</strong>
               </div>
               <div style={{ fontSize: 12.5, color: "#7A5A14", marginBottom: 10 }}>
-                Share this temporary password with them now — it won't be shown again. They'll be required to set their own password the first time they sign in.
+                Share this temporary password with them now — it won't be shown again. They'll be required to set their own password the next time they sign in.
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <code style={{ background: "#fff", border: `1px solid ${GOLD}`, borderRadius: 8, padding: "8px 12px", fontSize: 14, fontWeight: 700, letterSpacing: 0.5 }}>
@@ -1715,7 +1729,7 @@ function UsersSection({ onWipeUsers, showToast }) {
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table>
-              <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th></tr></thead>
+              <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
               <tbody>
                 {(users || []).map((u) => (
                   <tr key={u.id}>
@@ -1723,6 +1737,15 @@ function UsersSection({ onWipeUsers, showToast }) {
                     <td>{u.role === "ADMIN" ? <Badge text="Admin" color={EMERALD} /> : <Badge text="Viewer" color={BLUE} />}</td>
                     <td>{u.mustChangePassword ? <Badge text="Pending first login" color={GOLD} /> : <span style={{ color: INK_SOFT, fontSize: 12 }}>Active</span>}</td>
                     <td style={{ color: INK_SOFT }}>{new Date(u.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                    <td>
+                      <button
+                        onClick={() => resetPassword(u)}
+                        disabled={resettingId === u.id}
+                        style={{ border: "none", background: "none", cursor: resettingId === u.id ? "default" : "pointer", color: BLUE, fontSize: 12, fontWeight: 700, opacity: resettingId === u.id ? 0.6 : 1, padding: 0 }}
+                      >
+                        {resettingId === u.id ? "Resetting…" : "Reset password"}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
