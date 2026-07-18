@@ -47,6 +47,8 @@ function LoginForm() {
         justifyContent: "center",
         background: "#F4F5F7",
         fontFamily: "Inter, sans-serif",
+        padding: 16,
+        boxSizing: "border-box",
       }}
     >
       <form
@@ -56,7 +58,9 @@ function LoginForm() {
           border: "1px solid #E4E7EC",
           borderRadius: 14,
           padding: 32,
-          width: 340,
+          width: "100%",
+          maxWidth: 340,
+          boxSizing: "border-box",
           boxShadow: "0 1px 2px rgba(14,20,32,0.04)",
         }}
       >

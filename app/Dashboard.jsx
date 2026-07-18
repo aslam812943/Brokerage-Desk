@@ -528,7 +528,7 @@ export default function App() {
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
 
   return (
-    <div style={{ background: BG, minHeight: 600, fontFamily: "Inter, sans-serif", color: INK, borderRadius: 16 }}>
+    <div className="dt-root" style={{ background: BG, minHeight: 600, fontFamily: "Inter, sans-serif", color: INK, borderRadius: 16 }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
         * { box-sizing: border-box; font-family: 'Inter', sans-serif; }
@@ -541,11 +541,32 @@ export default function App() {
         input:focus, select:focus, button:focus-visible { outline: 2px solid ${BLUE}; outline-offset: 1px; }
         ::-webkit-scrollbar { height: 8px; width: 8px; }
         ::-webkit-scrollbar-thumb { background: #D6D9DE; border-radius: 8px; }
+
+        /* ---------- mobile-first responsive overrides ---------- */
+        .dt-nav::-webkit-scrollbar { display: none; }
+        @media (max-width: 760px) {
+          .dt-root { border-radius: 0 !important; }
+          .dt-header { flex-direction: column !important; align-items: stretch !important; padding: 14px 16px !important; border-radius: 0 !important; gap: 10px !important; }
+          .dt-header-right { width: 100% !important; justify-content: space-between !important; gap: 10px !important; }
+          .dt-nav { flex-wrap: nowrap !important; overflow-x: auto !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex: 1 1 auto !important; }
+          .dt-nav button { flex: 0 0 auto; }
+          .dt-content { padding: 14px !important; }
+        }
+        @media (max-width: 900px) {
+          .dt-chart-grid { grid-template-columns: 1fr !important; }
+        }
+        @media (max-width: 560px) {
+          .dt-search-wrap { width: 100% !important; }
+          .dt-search { width: 100% !important; }
+        }
+        @media (max-width: 480px) {
+          .dt-tc-name { width: 92px !important; flex-basis: 92px !important; }
+        }
       `}</style>
 
-      <div style={{ background: NAVY, borderRadius: "16px 16px 0 0", padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+      <div className="dt-header" style={{ background: NAVY, borderRadius: "16px 16px 0 0", padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: `linear-gradient(135deg, ${BLUE}, ${VIOLET})`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: `linear-gradient(135deg, ${BLUE}, ${VIOLET})`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <IndianRupee size={19} color="#fff" />
           </div>
           <div>
@@ -553,8 +574,8 @@ export default function App() {
             <div style={{ fontSize: 12, color: "#A6B0C3" }}>{latestDate ? `Data through ${parseISO(latestDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}` : "No data uploaded yet"}</div>
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-          <div style={{ display: "flex", gap: 6, background: "rgba(255,255,255,0.06)", padding: 5, borderRadius: 12, flexWrap: "wrap" }}>
+        <div className="dt-header-right" style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <div className="dt-nav" style={{ display: "flex", gap: 6, background: "rgba(255,255,255,0.06)", padding: 5, borderRadius: 12, flexWrap: "wrap" }}>
             {visibleNav.map((n) => (
               <button key={n.id} onClick={() => setTab(n.id)} style={{
                 display: "flex", alignItems: "center", gap: 7, padding: "8px 14px", borderRadius: 8, border: "none", cursor: "pointer",
@@ -569,7 +590,7 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ padding: 22 }}>
+      <div className="dt-content" style={{ padding: 22 }}>
         {tab === "dashboard" && <Dashboard allRecords={allRecords} dailyDates={dailyDates} latestDate={latestDate} targets={targets} isAdmin={isAdmin} />}
         {tab === "clients" && (
           <ClientsTab
@@ -713,9 +734,9 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
       <Card style={{ padding: 18 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
           <SectionTitle>Today's upload — client-wise breakdown ({latestD.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })})</SectionTitle>
-          <div style={{ position: "relative" }}>
+          <div className="dt-search-wrap" style={{ position: "relative" }}>
             <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: INK_SOFT }} />
-            <input placeholder="Search code, name, dealer, RM" value={todaySearch} onChange={(e) => setTodaySearch(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 240 }} />
+            <input className="dt-search" placeholder="Search code, name, dealer, RM" value={todaySearch} onChange={(e) => setTodaySearch(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 240 }} />
           </div>
         </div>
         <div style={{ overflowX: "auto", maxHeight: 380, overflowY: "auto" }}>
@@ -774,7 +795,7 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
         </ResponsiveContainer>
       </Card>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
+      <div className="dt-chart-grid" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <Card style={{ padding: 18 }}>
           <SectionTitle>Dealer-wise net brokerage ({period})</SectionTitle>
           <ResponsiveContainer width="100%" height={280}>
@@ -816,6 +837,7 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
                 <div key={c.code} style={{ display: "flex", alignItems: "center", gap: 12, padding: "7px 2px", borderBottom: i < topClients.length - 1 ? `1px solid ${LINE}` : "none" }}>
                   <div style={{ width: 18, flex: "0 0 auto", fontSize: 12, fontWeight: 700, color: INK_SOFT, textAlign: "right" }}>{i + 1}</div>
                   <div
+                    className="dt-tc-name"
                     title={c.name || c.code}
                     style={{ width: 150, flex: "0 0 150px", fontSize: 12.5, fontWeight: 600, color: INK, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
                   >
@@ -927,10 +949,10 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, isAdmi
             </button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <div style={{ position: "relative" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div className="dt-search-wrap" style={{ position: "relative" }}>
             <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: INK_SOFT }} />
-            <input placeholder="Search code, name, dealer, RM, branch" value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 260 }} />
+            <input className="dt-search" placeholder="Search code, name, dealer, RM, branch" value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 260 }} />
           </div>
           {isAdmin && (
             <div style={{ display: "flex", gap: 8 }}>
@@ -1139,13 +1161,13 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
             </button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <div style={{ position: "relative" }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div className="dt-search-wrap" style={{ position: "relative" }}>
             <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: INK_SOFT }} />
-            <input placeholder="Search dealer" value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 200 }} />
+            <input className="dt-search" placeholder="Search dealer" value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 200 }} />
           </div>
           {isAdmin && (
-            <div style={{ display: "flex", gap: 6 }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               <input
                 ref={inputRef}
                 placeholder="New dealer name"
@@ -1672,10 +1694,10 @@ function TasksTab({ isAdmin, showToast }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         <SectionTitle>Monthly tasks by dealer — {monthLabel(month)}</SectionTitle>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <div style={{ position: "relative" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div className="dt-search-wrap" style={{ position: "relative" }}>
             <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: INK_SOFT }} />
-            <input placeholder="Search dealer" value={dealerFilter} onChange={(e) => setDealerFilter(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 200 }} />
+            <input className="dt-search" placeholder="Search dealer" value={dealerFilter} onChange={(e) => setDealerFilter(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 200 }} />
           </div>
           {monthPicker}
         </div>

@@ -5,6 +5,11 @@ export const metadata = {
   description: "Internal brokerage dashboard",
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+};
+
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
