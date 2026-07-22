@@ -168,7 +168,10 @@ function parseDailySheet(rows) {
   const headers = rows[0].map(normHeader);
   const codeI = findCol(headers, "client code", "code");
   const nameI = findCol(headers, "client name", "name");
-  const netBrokI = findCol(headers, "net brok", "net brokerage", "brokerage");
+  // "total brokerage" must be checked before the bare "brokerage" fallback —
+  // Kotak's sheet has separate Cash/Derivative/CDS/Commodity brokerage columns
+  // before Total Brokerage, and the generic needle would match Cash first.
+  const netBrokI = findCol(headers, "net brok", "total brokerage", "brokerage");
   if (codeI < 0 || netBrokI < 0) return { records: [], error: "Couldn't find 'Client Code' and 'Net Brokerage' columns. The file needs: Client Code, Client Name, Net Brokerage." };
   const records = [];
   for (let r = 1; r < rows.length; r++) {
