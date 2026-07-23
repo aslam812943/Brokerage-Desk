@@ -62,6 +62,7 @@ model Targets {
   id            Int    @id @default(1)
   monthly       Float  @default(0)
   dealerMonthly Json   @default("{}")
+  kotakSharePct Float  @default(85)
 }
 
 model DealerTask {

@@ -6,6 +6,7 @@ import { requireSession, requireAdmin } from "../../../lib/apiAuth";
 const targetsSchema = z.object({
   monthly: z.number().finite().default(0),
   dealerMonthly: z.record(z.string(), z.number().finite()).default({}),
+  kotakSharePct: z.number().finite().min(0).max(100).default(85),
 });
 
 export async function GET() {
@@ -15,16 +16,17 @@ export async function GET() {
   const row = await prisma.targets.findUnique({ where: { id: 1 } });
   const monthly = row?.monthly ?? 0;
   const dealerMonthly = row?.dealerMonthly ?? {};
+  const kotakSharePct = row?.kotakSharePct ?? 85;
 
   if (session.user.role !== "ADMIN") {
     const matchKey = Object.keys(dealerMonthly || {}).find(
       (k) => k.toLowerCase() === session.user.name.toLowerCase()
     );
     const own = matchKey ? dealerMonthly[matchKey] : 0;
-    return NextResponse.json({ monthly: own, dealerMonthly: { [matchKey || session.user.name]: own } });
+    return NextResponse.json({ monthly: own, dealerMonthly: { [matchKey || session.user.name]: own }, kotakSharePct });
   }
 
-  return NextResponse.json({ monthly, dealerMonthly });
+  return NextResponse.json({ monthly, dealerMonthly, kotakSharePct });
 }
 
 export async function PUT(req) {

@@ -347,7 +347,7 @@ export default function App() {
   const [dailyData, setDailyData] = useState({});
   const [debitDates, setDebitDates] = useState([]);
   const [debitData, setDebitData] = useState({});
-  const [targets, setTargets] = useState({ monthly: 0, dealerMonthly: {} });
+  const [targets, setTargets] = useState({ monthly: 0, dealerMonthly: {}, kotakSharePct: 85 });
   const { data: session, update: updateSession } = useSession();
   const role = session?.user?.role === "ADMIN" ? "admin" : "user";
   const username = session?.user?.name || "";
@@ -383,16 +383,21 @@ export default function App() {
 
   const masterByCode = useMemo(() => { const map = {}; master.forEach((m) => (map[normCode(m.code)] = m)); return map; }, [master]);
 
+  // netBrok is stored raw (as uploaded) for every source — the Kotak share is
+  // applied here, at read time, so changing the setting in Targets instantly
+  // recalculates every past record instead of needing a backfill each time.
+  const kotakShare = (targets.kotakSharePct ?? 85) / 100;
   const allRecords = useMemo(() => {
     const out = [];
     for (const d of dailyDates) {
       for (const r of dailyData[d] || []) {
         const mm = masterByCode[normCode(r.code)];
-        out.push({ ...r, date: d, dealer: mm && mm.dealer ? mm.dealer : UNMAPPED, rm: mm ? mm.rm : "" });
+        const netBrok = r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok;
+        out.push({ ...r, date: d, netBrok, dealer: mm && mm.dealer ? mm.dealer : UNMAPPED, rm: mm ? mm.rm : "" });
       }
     }
     return out;
-  }, [dailyDates, dailyData, masterByCode]);
+  }, [dailyDates, dailyData, masterByCode, kotakShare]);
 
   const latestDebitByCode = useMemo(() => {
     const map = {};
@@ -412,7 +417,7 @@ export default function App() {
   // the other source's rows, if any, are kept so both reports coexist.
   const saveDaily = async (isoD, records) => {
     const src = records[0]?.source || "";
-    const total = records.reduce((s, r) => s + r.netBrok, 0);
+    const total = records.reduce((s, r) => s + (r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok), 0);
     setDailyData((p) => {
       const existing = p[isoD] || [];
       const kept = existing.filter((r) => (r.source || "") !== src);
@@ -625,6 +630,7 @@ export default function App() {
           <UploadTab
             dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData} masterByCode={masterByCode}
             onSaveDaily={saveDaily} onDeleteDaily={deleteDaily} onSaveDebit={saveDebit} onDeleteDebit={deleteDebit} showToast={showToast}
+            kotakSharePct={targets.kotakSharePct ?? 85}
           />
         )}
         {tab === "targets" && isAdmin && <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
@@ -1372,7 +1378,7 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
   );
 }
 
-function UploadTab({ dailyDates, dailyData, debitDates, debitData, masterByCode, onSaveDaily, onDeleteDaily, onSaveDebit, onDeleteDebit, showToast }) {
+function UploadTab({ dailyDates, dailyData, debitDates, debitData, masterByCode, onSaveDaily, onDeleteDaily, onSaveDebit, onDeleteDebit, showToast, kotakSharePct }) {
   const [sub, setSub] = useState("brokerage");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1392,7 +1398,7 @@ function UploadTab({ dailyDates, dailyData, debitDates, debitData, masterByCode,
           sampleRows={[["100054", "Anto P.O", "478.21"], ["380026", "Abdu N", "86.70"]]}
           parseFn={parseDailySheet} dates={dailyDates} data={dailyData} onSave={onSaveDaily} onDelete={onDeleteDaily}
           valueKey="netBrok" valueLabel="Net Brokerage" masterByCode={masterByCode} showToast={showToast}
-          hasSource
+          hasSource kotakSharePct={kotakSharePct}
         />
       ) : (
         <UploadPane
@@ -1408,8 +1414,6 @@ function UploadTab({ dailyDates, dailyData, debitDates, debitData, masterByCode,
   );
 }
 
-const KOTAK_SHARE = 0.85;
-
 // Detects "SW" / "KOTAK" from a filename, requiring a non-letter boundary so short
 // tokens like "sw" don't false-positive inside unrelated words (e.g. "answers.xlsx").
 function detectSourceFromFilename(filename) {
@@ -1419,12 +1423,17 @@ function detectSourceFromFilename(filename) {
   return null;
 }
 
-function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleHeader, sampleRows, parseFn, dates, data, onSave, onDelete, valueKey, valueLabel, masterByCode, showToast, hasSource }) {
+function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleHeader, sampleRows, parseFn, dates, data, onSave, onDelete, valueKey, valueLabel, masterByCode, showToast, hasSource, kotakSharePct = 85 }) {
   const [pending, setPending] = useState(null);
   const [dateInput, setDateInput] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [source, setSource] = useState("SW");
   const inputRef = useRef(null);
+  const kotakShare = kotakSharePct / 100;
+
+  // Records are always stored raw (as uploaded) — the Kotak share is applied
+  // at read time everywhere, so this total is for display/preview only.
+  const shareAdjusted = (r) => (r.source === "KOTAK" ? r[valueKey] * kotakShare : r[valueKey]);
 
   const onFile = async (file) => {
     if (!file) return;
@@ -1438,11 +1447,9 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
     const effectiveSource = hasSource ? (detected || source) : null;
     if (hasSource && detected && detected !== source) setSource(detected);
 
-    const records = hasSource
-      ? rawRecords.map((r) => ({ ...r, [valueKey]: effectiveSource === "KOTAK" ? r[valueKey] * KOTAK_SHARE : r[valueKey], source: effectiveSource }))
-      : rawRecords;
+    const records = hasSource ? rawRecords.map((r) => ({ ...r, source: effectiveSource })) : rawRecords;
     const guessDate = guessDateFromFilename(sheetName.match(/\d{6,8}/) ? sheetName : file.name);
-    setPending({ records, count: records.length, total: records.reduce((s, r) => s + r[valueKey], 0), fileName: file.name, source: effectiveSource });
+    setPending({ records, count: records.length, total: records.reduce((s, r) => s + shareAdjusted(r), 0), fileName: file.name, source: effectiveSource });
     setDateInput(isoDate(guessDate));
   };
 
@@ -1503,7 +1510,7 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
               ))}
             </div>
             {source === "KOTAK" && (
-              <span style={{ fontSize: 12, color: GOLD }}>Only 85% of each row's Net Brokerage will be saved.</span>
+              <span style={{ fontSize: 12, color: GOLD }}>Shown at the {kotakSharePct}% Kotak share (set in Targets) — the raw figure is what's saved.</span>
             )}
           </div>
         )}
@@ -1526,7 +1533,7 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
           <div style={{ marginTop: 16, padding: 16, background: accentSoft, borderRadius: 10, display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ fontSize: 13.5 }}>
               Parsed <strong>{pending.fileName}</strong> — {pending.count} clients, total {valueLabel.toLowerCase()} <strong>{fmtFull(pending.total)}</strong>
-              {hasSource && source === "KOTAK" && <span style={{ color: GOLD }}> (already reduced to 85% for Kotak)</span>}
+              {hasSource && source === "KOTAK" && <span style={{ color: GOLD }}> (shown at {kotakSharePct}% Kotak share)</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <label style={{ fontSize: 12.5, color: INK_SOFT }}>Report date:</label>
@@ -1555,7 +1562,7 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
               <thead><tr><th>Date</th>{hasSource && <th>Source</th>}<th>Clients</th><th>{valueLabel}</th><th>Unmapped</th><th></th></tr></thead>
               <tbody>
                 {reportRows.map((row) => {
-                  const total = row.records.reduce((s, r) => s + r[valueKey], 0);
+                  const total = row.records.reduce((s, r) => s + shareAdjusted(r), 0);
                   const unmapped = row.records.filter((r) => !masterByCode[normCode(r.code)]).length;
                   const srcLabel = row.source === "KOTAK" ? "Kotak" : row.source === "SW" ? "SW" : "Unknown";
                   return (
@@ -1771,7 +1778,11 @@ function UsersSection({ onWipeUsers, showToast }) {
 
 function TargetsTab({ targets, onSave, onWipeUsers, showToast }) {
   const [monthly, setMonthly] = useState(targets.monthly || 0);
-  const save = () => onSave({ ...targets, monthly: Number(monthly) || 0 });
+  const [kotakSharePct, setKotakSharePct] = useState(targets.kotakSharePct ?? 85);
+  const save = () => {
+    const pct = Number(kotakSharePct);
+    onSave({ ...targets, monthly: Number(monthly) || 0, kotakSharePct: isNaN(pct) ? 85 : Math.min(100, Math.max(0, pct)) });
+  };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 520 }}>
       <Card style={{ padding: 20 }}>
@@ -1782,7 +1793,36 @@ function TargetsTab({ targets, onSave, onWipeUsers, showToast }) {
           <input type="number" value={monthly} onChange={(e) => setMonthly(e.target.value)} style={{ ...inputStyle, width: 200, fontSize: 15, fontWeight: 700 }} />
         </div>
       </Card>
-      <button onClick={save} style={{ alignSelf: "flex-start", padding: "10px 22px", borderRadius: 9, border: "none", background: ROSE, color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>Save target</button>
+
+      <Card style={{ padding: 20 }}>
+        <SectionTitle>Kotak brokerage share</SectionTitle>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+          Every Kotak upload is stored at its raw (100%) figure — this percentage is applied wherever brokerage totals are shown, for every Kotak record ever uploaded. Changing it recalculates all of them immediately, no re-upload needed.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {[85, 100].map((p) => (
+            <button
+              key={p}
+              onClick={() => setKotakSharePct(p)}
+              style={{
+                padding: "7px 16px", borderRadius: 8, border: `1px solid ${Number(kotakSharePct) === p ? GOLD : LINE}`,
+                background: Number(kotakSharePct) === p ? GOLD_SOFT : "#fff", color: Number(kotakSharePct) === p ? GOLD : INK_SOFT,
+                fontWeight: 700, fontSize: 13, cursor: "pointer",
+              }}
+            >
+              {p}%
+            </button>
+          ))}
+          <input
+            type="number" min="0" max="100" value={kotakSharePct}
+            onChange={(e) => setKotakSharePct(e.target.value)}
+            style={{ ...inputStyle, width: 90, fontSize: 15, fontWeight: 700 }}
+          />
+          <span style={{ fontSize: 14, color: INK_SOFT }}>%</span>
+        </div>
+      </Card>
+
+      <button onClick={save} style={{ alignSelf: "flex-start", padding: "10px 22px", borderRadius: 9, border: "none", background: ROSE, color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>Save settings</button>
 
       <UsersSection onWipeUsers={onWipeUsers} showToast={showToast} />
     </div>
