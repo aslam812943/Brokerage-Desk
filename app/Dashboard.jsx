@@ -77,6 +77,23 @@ function canonicalDealer(dealerNames, raw) {
   return match || name;
 }
 
+// Splits a client's brokerage between their Dealer and RM. When both are set
+// and name the same person (case-insensitive — the same dealer often acts as
+// their own RM), there's nothing to split: the dealer takes the full 100%.
+// Otherwise the RM gets rmSharePct (Targets.rmSplitPct) and the dealer gets
+// the remainder; if only one side is mapped, that side takes the full amount.
+function splitShares(dealer, rm, rmSharePct) {
+  const d = String(dealer || "").trim();
+  const r = String(rm || "").trim();
+  const hasDealer = !!d && d !== UNMAPPED;
+  const hasRm = !!r;
+  if (hasDealer && hasRm && d.toLowerCase() === r.toLowerCase()) return { dealerPct: 100, rmPct: 0, samePerson: true };
+  if (hasDealer && hasRm) return { dealerPct: 100 - rmSharePct, rmPct: rmSharePct, samePerson: false };
+  if (hasDealer) return { dealerPct: 100, rmPct: 0, samePerson: false };
+  if (hasRm) return { dealerPct: 0, rmPct: 100, samePerson: false };
+  return { dealerPct: 0, rmPct: 0, samePerson: false };
+}
+
 /*
  * Storage adapter: the dashboard below was written against a simple
  * key/value store (window.storage). It's now backed by real API routes
@@ -356,7 +373,7 @@ export default function App() {
   const [dailyData, setDailyData] = useState({});
   const [debitDates, setDebitDates] = useState([]);
   const [debitData, setDebitData] = useState({});
-  const [targets, setTargets] = useState({ monthly: 0, dealerMonthly: {}, kotakSharePct: 85 });
+  const [targets, setTargets] = useState({ monthly: 0, dealerMonthly: {}, kotakSharePct: 85, rmSplitPct: 50 });
   const { data: session, update: updateSession } = useSession();
   const role = session?.user?.role === "ADMIN" ? "admin" : "user";
   const username = session?.user?.name || "";
@@ -1270,6 +1287,44 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
     onSaveTargets({ ...targets, dealerMonthly: { ...targets.dealerMonthly, [dealer]: isNaN(v) ? 0 : v } });
   };
 
+  const [splitSearch, setSplitSearch] = useState("");
+  const rmSplitPct = targets.rmSplitPct ?? 50;
+
+  const brokerageByClient = useMemo(() => {
+    const map = {};
+    allRecords.forEach((r) => {
+      const d = parseISO(r.date);
+      const match = period === "all" ? true
+        : period === "month" ? (d.getFullYear() === y && d.getMonth() === m)
+        : period === "quarter" ? (d.getFullYear() === y && quarterOf(d) === q)
+        : (d.getFullYear() === y);
+      if (match) { const key = normCode(r.code); map[key] = (map[key] || 0) + r.netBrok; }
+    });
+    return map;
+  }, [allRecords, period]);
+
+  // Split table: one row per client mapped to a dealer and/or RM, showing how
+  // their period brokerage divides between the two per splitShares().
+  const splitRows = useMemo(() => {
+    return master
+      .filter((mm) => mm.dealer || mm.rm)
+      .map((mm) => {
+        const brokerage = brokerageByClient[normCode(mm.code)] || 0;
+        const { dealerPct, rmPct, samePerson } = splitShares(mm.dealer, mm.rm, rmSplitPct);
+        return {
+          code: mm.code, name: mm.name, dealer: mm.dealer || UNMAPPED, rm: mm.rm || "",
+          brokerage, dealerShare: (brokerage * dealerPct) / 100, rmShare: (brokerage * rmPct) / 100,
+          dealerPct, rmPct, samePerson,
+        };
+      })
+      .filter((r) => {
+        if (!splitSearch) return true;
+        const s = splitSearch.toLowerCase();
+        return r.code.toLowerCase().includes(s) || r.name.toLowerCase().includes(s) || r.dealer.toLowerCase().includes(s) || r.rm.toLowerCase().includes(s);
+      })
+      .sort((a, b) => b.brokerage - a.brokerage);
+  }, [master, brokerageByClient, rmSplitPct, splitSearch]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
@@ -1372,6 +1427,43 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
                 );
               })}
               {rows.length === 0 && <tr><td colSpan={6} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealers yet — add one above.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card style={{ padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+          <SectionTitle>RM / Dealer split ({period})</SectionTitle>
+          <div className="dt-search-wrap" style={{ position: "relative" }}>
+            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: INK_SOFT }} />
+            <input className="dt-search" placeholder="Search client, dealer, RM" value={splitSearch} onChange={(e) => setSplitSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 220 }} />
+          </div>
+        </div>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+          Clients mapped to both a dealer and an RM split {100 - rmSplitPct}/{rmSplitPct} (dealer/RM). If the RM and dealer are the same person, the dealer keeps 100%. Adjust the split in the Targets tab.
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead><tr><th>Client</th><th>Dealer</th><th>RM</th><th>Net Brokerage</th><th>Split</th><th>Dealer Share</th><th>RM Share</th></tr></thead>
+            <tbody>
+              {splitRows.map((r) => (
+                <tr key={r.code}>
+                  <td>
+                    <div style={{ fontWeight: 600 }}>{r.name || r.code}</div>
+                    <div style={{ fontSize: 11, color: INK_SOFT }}>{r.code}</div>
+                  </td>
+                  <td>{r.dealer && r.dealer !== UNMAPPED ? <Badge text={r.dealer} color={dealerColor(r.dealer)} /> : <Badge text={UNMAPPED} color="#9AA1AC" />}</td>
+                  <td style={{ color: INK_SOFT }}>{r.rm || "—"}</td>
+                  <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.brokerage)}</td>
+                  <td style={{ fontSize: 12, color: INK_SOFT }}>
+                    {r.samePerson ? "100% (same person)" : `${r.dealerPct}% / ${r.rmPct}%`}
+                  </td>
+                  <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.dealerShare)}</td>
+                  <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.rmShare)}</td>
+                </tr>
+              ))}
+              {splitRows.length === 0 && <tr><td colSpan={7} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No clients mapped to a dealer or RM yet.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1790,9 +1882,16 @@ function UsersSection({ onWipeUsers, showToast }) {
 function TargetsTab({ targets, onSave, onWipeUsers, showToast }) {
   const [monthly, setMonthly] = useState(targets.monthly || 0);
   const [kotakSharePct, setKotakSharePct] = useState(targets.kotakSharePct ?? 85);
+  const [rmSplitPct, setRmSplitPct] = useState(targets.rmSplitPct ?? 50);
   const save = () => {
     const pct = Number(kotakSharePct);
-    onSave({ ...targets, monthly: Number(monthly) || 0, kotakSharePct: isNaN(pct) ? 85 : Math.min(100, Math.max(0, pct)) });
+    const rmPct = Number(rmSplitPct);
+    onSave({
+      ...targets,
+      monthly: Number(monthly) || 0,
+      kotakSharePct: isNaN(pct) ? 85 : Math.min(100, Math.max(0, pct)),
+      rmSplitPct: isNaN(rmPct) ? 50 : Math.min(100, Math.max(0, rmPct)),
+    });
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 520 }}>
@@ -1830,6 +1929,31 @@ function TargetsTab({ targets, onSave, onWipeUsers, showToast }) {
             style={{ ...inputStyle, width: 90, fontSize: 15, fontWeight: 700 }}
           />
           <span style={{ fontSize: 14, color: INK_SOFT }}>%</span>
+        </div>
+      </Card>
+
+      <Card style={{ padding: 20 }}>
+        <SectionTitle>RM / Dealer brokerage split</SectionTitle>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+          For a client mapped to both an RM and a dealer, this percentage is the RM's share — the dealer keeps the rest. If the RM and dealer are the same person (case-insensitive), there's no split: the dealer gets 100%. See the split breakdown table in the Dealers tab.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={() => setRmSplitPct(50)}
+            style={{
+              padding: "7px 16px", borderRadius: 8, border: `1px solid ${Number(rmSplitPct) === 50 ? TEAL : LINE}`,
+              background: Number(rmSplitPct) === 50 ? TEAL_SOFT : "#fff", color: Number(rmSplitPct) === 50 ? TEAL : INK_SOFT,
+              fontWeight: 700, fontSize: 13, cursor: "pointer",
+            }}
+          >
+            50 / 50
+          </button>
+          <input
+            type="number" min="0" max="100" value={rmSplitPct}
+            onChange={(e) => setRmSplitPct(e.target.value)}
+            style={{ ...inputStyle, width: 90, fontSize: 15, fontWeight: 700 }}
+          />
+          <span style={{ fontSize: 14, color: INK_SOFT }}>% to RM</span>
         </div>
       </Card>
 

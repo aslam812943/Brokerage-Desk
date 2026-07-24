@@ -63,6 +63,7 @@ model Targets {
   monthly       Float  @default(0)
   dealerMonthly Json   @default("{}")
   kotakSharePct Float  @default(85)
+  rmSplitPct    Float  @default(50)
 }
 
 model DealerTask {

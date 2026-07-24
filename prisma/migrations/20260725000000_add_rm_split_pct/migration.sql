@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Targets" ADD COLUMN     "rmSplitPct" DOUBLE PRECISION NOT NULL DEFAULT 50;
