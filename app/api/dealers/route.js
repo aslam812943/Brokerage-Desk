@@ -34,7 +34,16 @@ export async function PUT(req) {
     return NextResponse.json({ error: "Invalid dealer list" }, { status: 400 });
   }
 
-  const names = [...new Set(parsed.data)];
+  // Dedupe case-insensitively, keeping the first-seen casing — prevents
+  // "Rasish" and "RASISH" from being stored as two separate dealers.
+  const seen = new Set();
+  const names = [];
+  for (const raw of parsed.data) {
+    const key = raw.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(raw);
+  }
   await prisma.$transaction([
     prisma.dealer.deleteMany({}),
     ...(names.length ? [prisma.dealer.createMany({ data: names.map((name) => ({ name })) })] : []),

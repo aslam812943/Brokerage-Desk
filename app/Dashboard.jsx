@@ -67,6 +67,15 @@ function parseISO(str) {
   return new Date(y, m - 1, d);
 }
 const normCode = (c) => String(c || "").trim().toUpperCase().replace(/\s+/g, "");
+// Dealer names are matched case-insensitively against the known list so a
+// re-upload with different casing (e.g. "RASISH" vs "Rasish") snaps onto the
+// existing dealer instead of silently splitting their stats into a second row.
+function canonicalDealer(dealerNames, raw) {
+  const name = String(raw || "").trim();
+  if (!name) return "";
+  const match = dealerNames.find((d) => d.toLowerCase() === name.toLowerCase());
+  return match || name;
+}
 
 /*
  * Storage adapter: the dashboard below was written against a simple
@@ -460,6 +469,7 @@ export default function App() {
   const saveTargets = async (t) => { setTargets(t); storageSet("targets", t); };
 
   const renameDealer = async (oldName, newName) => {
+    newName = canonicalDealer(dealerNames.filter((d) => d !== oldName), newName);
     if (!newName || newName === oldName) return;
     const nextMaster = master.map((m) => (m.dealer === oldName ? { ...m, dealer: newName } : m));
     await saveMaster(nextMaster);
@@ -482,16 +492,17 @@ export default function App() {
   };
   const addDealer = async (name) => {
     if (!name) { showToast("Enter a dealer name first", "red"); return; }
-    if (dealerNames.includes(name)) { showToast(`${name} already exists`, "red"); return; }
+    if (dealerNames.some((d) => d.toLowerCase() === name.toLowerCase())) { showToast(`${name} already exists`, "red"); return; }
     await saveDealerRegistry([...dealerRegistry, name]);
     showToast(`Added dealer ${name}`);
   };
   const addDealersBulk = async (names) => {
-    const existing = new Set(dealerNames);
+    const existing = new Set(dealerNames.map((d) => d.toLowerCase()));
     const added = [];
     for (const n of names) {
-      if (!n || existing.has(n)) continue;
-      existing.add(n);
+      const key = n.toLowerCase();
+      if (!n || existing.has(key)) continue;
+      existing.add(key);
       added.push(n);
     }
     if (!added.length) { showToast("No new dealers to add — all names were empty or already exist", "gold"); return; }
@@ -1039,7 +1050,7 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, isAdmi
     bulkPending.records.forEach((r) => {
       const key = normCode(r.code);
       if (byCode[key]) updated++; else created++;
-      byCode[key] = { code: r.code, name: r.name, dealer: r.dealer, rm: r.rm, branch: r.branch };
+      byCode[key] = { code: r.code, name: r.name, dealer: canonicalDealer(dealerNames, r.dealer), rm: r.rm, branch: r.branch };
     });
     onSave(Object.values(byCode));
     showToast(`Bulk upload: ${created} added, ${updated} updated`);
