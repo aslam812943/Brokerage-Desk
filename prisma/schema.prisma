@@ -35,6 +35,11 @@ model Dealer {
   createdAt DateTime @default(now())
 }
 
+model Rm {
+  name      String   @id
+  createdAt DateTime @default(now())
+}
+
 model DailyRecord {
   id       String @id @default(cuid())
   date     String

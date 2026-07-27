@@ -10,7 +10,7 @@ import {
   LayoutDashboard, UploadCloud, Users, Target, TrendingUp,
   Calendar, Trash2, Plus, Search, AlertTriangle, CheckCircle2,
   FileSpreadsheet, Building2, IndianRupee, Pencil, X, Check,
-  ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks, KeyRound
+  ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks, KeyRound, UserCog
 } from "lucide-react";
 
 /* ---------- design tokens ---------- */
@@ -76,6 +76,13 @@ function canonicalDealer(dealerNames, raw) {
   const match = dealerNames.find((d) => d.toLowerCase() === name.toLowerCase());
   return match || name;
 }
+// Same case-insensitive snap-to-registry matching as canonicalDealer, for RMs.
+function canonicalRm(rmNames, raw) {
+  const name = String(raw || "").trim();
+  if (!name) return "";
+  const match = rmNames.find((d) => d.toLowerCase() === name.toLowerCase());
+  return match || name;
+}
 
 // Splits a client's brokerage between their Dealer and RM. When both are set
 // and name the same person (case-insensitive — the same dealer often acts as
@@ -125,6 +132,7 @@ async function storageGet(key) {
   try {
     if (key === "master-clients") return (await apiGet("/api/master")) ?? [];
     if (key === "dealers-list") return (await apiGet("/api/dealers")) ?? [];
+    if (key === "rms-list") return (await apiGet("/api/rms")) ?? [];
     if (key === "targets") return (await apiGet("/api/targets")) ?? { monthly: 0, dealerMonthly: {} };
     if (key.startsWith("daily:")) {
       const all = (await apiGet("/api/daily")) ?? {};
@@ -141,6 +149,7 @@ async function storageSet(key, value) {
   try {
     if (key === "master-clients") return apiPut("/api/master", value);
     if (key === "dealers-list") return apiPut("/api/dealers", value);
+    if (key === "rms-list") return apiPut("/api/rms", value);
     if (key === "targets") return apiPut("/api/targets", value);
     if (key.startsWith("daily:")) return apiPut(`/api/daily/${key.slice("daily:".length)}`, value);
     if (key.startsWith("debit:")) return apiPut(`/api/debit/${key.slice("debit:".length)}`, value);
@@ -369,6 +378,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [master, setMaster] = useState([]);
   const [dealerRegistry, setDealerRegistry] = useState([]);
+  const [rmRegistry, setRmRegistry] = useState([]);
   const [dailyDates, setDailyDates] = useState([]);
   const [dailyData, setDailyData] = useState({});
   const [debitDates, setDebitDates] = useState([]);
@@ -387,6 +397,7 @@ export default function App() {
     (async () => {
       const m = await storageGet("master-clients"); if (m) setMaster(m);
       const dr = await storageGet("dealers-list"); if (dr) setDealerRegistry(dr);
+      const rr = await storageGet("rms-list"); if (rr) setRmRegistry(rr);
       const t = await storageGet("targets"); if (t) setTargets(t);
 
       const dKeys = await storageList("daily:");
@@ -437,6 +448,12 @@ export default function App() {
     return Array.from(s).sort();
   }, [dealerRegistry, master]);
 
+  const rmNames = useMemo(() => {
+    const s = new Set(rmRegistry);
+    master.forEach((m) => { if (m.rm) s.add(m.rm); });
+    return Array.from(s).sort();
+  }, [rmRegistry, master]);
+
   const latestDate = dailyDates.length ? dailyDates[dailyDates.length - 1] : null;
 
   // A save only replaces rows from the same source (SW or Kotak) for that date —
@@ -483,6 +500,7 @@ export default function App() {
   };
   const saveMaster = async (records) => { setMaster(records); storageSet("master-clients", records); };
   const saveDealerRegistry = async (list) => { setDealerRegistry(list); storageSet("dealers-list", list); };
+  const saveRmRegistry = async (list) => { setRmRegistry(list); storageSet("rms-list", list); };
   const saveTargets = async (t) => { setTargets(t); storageSet("targets", t); };
 
   const renameDealer = async (oldName, newName) => {
@@ -527,6 +545,43 @@ export default function App() {
     showToast(`Added ${added.length} dealer(s)`);
   };
 
+  const renameRm = async (oldName, newName) => {
+    newName = canonicalRm(rmNames.filter((r) => r !== oldName), newName);
+    if (!newName || newName === oldName) return;
+    const nextMaster = master.map((m) => (m.rm === oldName ? { ...m, rm: newName } : m));
+    await saveMaster(nextMaster);
+    const nextReg = rmRegistry.filter((r) => r !== oldName);
+    if (!nextReg.includes(newName)) nextReg.push(newName);
+    await saveRmRegistry(nextReg);
+    showToast(`Renamed ${oldName} → ${newName}`);
+  };
+  const removeRm = async (name) => {
+    const affected = master.filter((m) => m.rm === name).length;
+    const nextMaster = master.map((m) => (m.rm === name ? { ...m, rm: "" } : m));
+    await saveMaster(nextMaster);
+    await saveRmRegistry(rmRegistry.filter((r) => r !== name));
+    showToast(affected ? `Removed ${name} — ${affected} client(s) now unmapped` : `Removed ${name}`, "gold");
+  };
+  const addRm = async (name) => {
+    if (!name) { showToast("Enter an RM name first", "red"); return; }
+    if (rmNames.some((r) => r.toLowerCase() === name.toLowerCase())) { showToast(`${name} already exists`, "red"); return; }
+    await saveRmRegistry([...rmRegistry, name]);
+    showToast(`Added RM ${name}`);
+  };
+  const addRmsBulk = async (names) => {
+    const existing = new Set(rmNames.map((r) => r.toLowerCase()));
+    const added = [];
+    for (const n of names) {
+      const key = n.toLowerCase();
+      if (!n || existing.has(key)) continue;
+      existing.add(key);
+      added.push(n);
+    }
+    if (!added.length) { showToast("No new RMs to add — all names were empty or already exist", "gold"); return; }
+    await saveRmRegistry([...rmRegistry, ...added]);
+    showToast(`Added ${added.length} RM(s)`);
+  };
+
   const wipeClients = async () => {
     await saveMaster([]);
     showToast("All clients removed", "gold");
@@ -537,6 +592,12 @@ export default function App() {
     await saveDealerRegistry([]);
     await saveTargets({ ...targets, dealerMonthly: {} });
     showToast(affected ? `All dealers removed — ${affected} client(s) now unmapped` : "All dealers removed", "gold");
+  };
+  const wipeRms = async () => {
+    const affected = master.filter((m) => m.rm).length;
+    await saveMaster(master.map((m) => ({ ...m, rm: "" })));
+    await saveRmRegistry([]);
+    showToast(affected ? `All RMs removed — ${affected} client(s) now unmapped` : "All RMs removed", "gold");
   };
   const wipeUsers = async () => {
     const res = await fetch("/api/users", {
@@ -570,6 +631,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, color: BLUE, adminOnly: false },
     { id: "clients", label: "Clients", icon: Users, color: TEAL, adminOnly: false },
     { id: "dealers", label: "Dealers", icon: Building2, color: VIOLET, adminOnly: false },
+    { id: "rms", label: "RMs", icon: UserCog, color: ROSE, adminOnly: false },
     { id: "tasks", label: "Monthly Tasks", icon: ListChecks, color: GOLD, adminOnly: false },
     { id: "upload", label: "Upload", icon: UploadCloud, color: GOLD, adminOnly: true },
     { id: "targets", label: "Targets", icon: Target, color: ROSE, adminOnly: true },
@@ -643,7 +705,7 @@ export default function App() {
         {tab === "dashboard" && <Dashboard allRecords={allRecords} dailyDates={dailyDates} latestDate={latestDate} targets={targets} isAdmin={isAdmin} />}
         {tab === "clients" && (
           <ClientsTab
-            master={master} allRecords={allRecords} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames}
+            master={master} allRecords={allRecords} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
             isAdmin={isAdmin} onSave={saveMaster} showToast={showToast} onWipe={wipeClients}
           />
         )}
@@ -651,7 +713,14 @@ export default function App() {
           <DealersTab
             master={master} dealerNames={dealerNames} allRecords={allRecords} targets={targets}
             isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk} onSaveTargets={saveTargets}
-            onWipe={wipeDealers}
+            onWipe={wipeDealers} showToast={showToast}
+          />
+        )}
+        {tab === "rms" && (
+          <RmsTab
+            master={master} rmNames={rmNames} allRecords={allRecords} targets={targets}
+            isAdmin={isAdmin} onRename={renameRm} onRemove={removeRm} onAdd={addRm} onAddBulk={addRmsBulk}
+            onWipe={wipeRms} showToast={showToast}
           />
         )}
         {tab === "upload" && isAdmin && (
@@ -816,8 +885,14 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
   const yearPct = monthlyTarget > 0 ? (yearTotal / (monthlyTarget * 12)) * 100 : null;
 
   const activeRecs = allRecords.filter((r) => inPeriod(r, period));
+  // Dealer-wise figures show each dealer's Net share (after the RM split), not
+  // the undivided Total — see DealersTab for the Total/Net breakdown.
+  const rmSplitPct = targets.rmSplitPct ?? 50;
   const dealerMap = {};
-  activeRecs.forEach((r) => { dealerMap[r.dealer] = (dealerMap[r.dealer] || 0) + r.netBrok; });
+  activeRecs.forEach((r) => {
+    const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
+    dealerMap[r.dealer] = (dealerMap[r.dealer] || 0) + (r.netBrok * dealerPct) / 100;
+  });
   const dealerRows = Object.entries(dealerMap).map(([dealer, val]) => ({ dealer, value: Math.round(val) })).sort((a, b) => b.value - a.value);
 
   const clientMap = {};
@@ -933,7 +1008,7 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
 
       <div className="dt-chart-grid" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <Card style={{ padding: 18 }}>
-          <SectionTitle>Dealer-wise net brokerage ({period})</SectionTitle>
+          <SectionTitle>Dealer-wise net brokerage — after RM split ({period})</SectionTitle>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={dealerRows} margin={{ top: 8, right: 12, left: -14, bottom: 20 }}>
               <CartesianGrid stroke={LINE} vertical={false} />
@@ -947,7 +1022,7 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
           </ResponsiveContainer>
         </Card>
         <Card style={{ padding: 18 }}>
-          <SectionTitle>Dealer share ({period})</SectionTitle>
+          <SectionTitle>Dealer share — after RM split ({period})</SectionTitle>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie data={dealerRows} dataKey="value" nameKey="dealer" innerRadius={55} outerRadius={95} paddingAngle={2}>
@@ -995,9 +1070,58 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
   );
 }
 
-function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, isAdmin, onSave, showToast, onWipe }) {
+// Lists one client's underlying daily records (date, source, brokerage) —
+// opened from a click on the client's name in the Clients tab or the Dealers
+// tab's RM/Dealer split table.
+function ClientTransactionsModal({ code, name, records, onClose }) {
+  const sorted = [...records].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const total = sorted.reduce((s, r) => s + r.netBrok, 0);
+  const sourceLabel = (s) => (s === "KOTAK" ? "Kotak" : s === "SW" ? "SW" : "—");
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(14,20,32,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 520 }}>
+        <Card style={{ padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>{name || code}</div>
+              <div style={{ fontSize: 12, color: INK_SOFT }}>{code}</div>
+            </div>
+            <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", color: INK_SOFT }}><X size={18} /></button>
+          </div>
+          <div style={{ fontSize: 12.5, color: INK_SOFT, margin: "8px 0 12px" }}>{sorted.length} transaction{sorted.length === 1 ? "" : "s"}</div>
+          <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+            <table>
+              <thead><tr><th>Date</th><th>Source</th><th>Brokerage</th></tr></thead>
+              <tbody>
+                {sorted.map((r, i) => (
+                  <tr key={`${r.date}-${r.source}-${i}`}>
+                    <td>{parseISO(r.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                    <td>{sourceLabel(r.source)}</td>
+                    <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.netBrok)}</td>
+                  </tr>
+                ))}
+                {sorted.length === 0 && <tr><td colSpan={3} style={{ color: INK_SOFT, textAlign: "center", padding: 16 }}>No transactions found for this client.</td></tr>}
+              </tbody>
+              {sorted.length > 0 && (
+                <tfoot>
+                  <tr style={{ borderTop: `2px solid ${LINE}` }}>
+                    <td colSpan={2} style={{ fontWeight: 700, textAlign: "right" }}>Total</td>
+                    <td style={{ fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{fmtFull(total)}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, rmNames, isAdmin, onSave, showToast, onWipe }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("all");
+  const [selectedClient, setSelectedClient] = useState(null);
   const [editingCode, setEditingCode] = useState(null);
   const [editDraft, setEditDraft] = useState({});
   const [adding, setAdding] = useState(false);
@@ -1067,7 +1191,7 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, isAdmi
     bulkPending.records.forEach((r) => {
       const key = normCode(r.code);
       if (byCode[key]) updated++; else created++;
-      byCode[key] = { code: r.code, name: r.name, dealer: canonicalDealer(dealerNames, r.dealer), rm: r.rm, branch: r.branch };
+      byCode[key] = { code: r.code, name: r.name, dealer: canonicalDealer(dealerNames, r.dealer), rm: canonicalRm(rmNames, r.rm), branch: r.branch };
     });
     onSave(Object.values(byCode));
     showToast(`Bulk upload: ${created} added, ${updated} updated`);
@@ -1112,7 +1236,10 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, isAdmi
               <option value="">Select dealer</option>
               {dealerNames.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
-            <input placeholder="RM" value={draft.rm} onChange={(e) => setDraft({ ...draft, rm: e.target.value })} style={inputStyle} />
+            <select value={draft.rm} onChange={(e) => setDraft({ ...draft, rm: e.target.value })} style={inputStyle}>
+              <option value="">Select RM</option>
+              {rmNames.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
             <input placeholder="Branch" value={draft.branch} onChange={(e) => setDraft({ ...draft, branch: e.target.value })} style={inputStyle} />
             <button onClick={addClient} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Save</button>
           </div>
@@ -1179,7 +1306,15 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, isAdmi
                 return (
                   <tr key={r.code}>
                     <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.code}</td>
-                    <td>{editing ? <input value={editDraft.name} onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })} style={{ ...inputStyle, width: 140 }} /> : r.name}</td>
+                    <td>
+                      {editing ? (
+                        <input value={editDraft.name} onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })} style={{ ...inputStyle, width: 140 }} />
+                      ) : (
+                        <button onClick={() => setSelectedClient({ code: r.code, name: r.name })} style={{ border: "none", background: "none", padding: 0, cursor: "pointer", color: BLUE, fontWeight: 600, fontSize: 13, textAlign: "left" }}>
+                          {r.name || r.code}
+                        </button>
+                      )}
+                    </td>
                     <td>
                       {editing ? (
                         <select value={editDraft.dealer} onChange={(e) => setEditDraft({ ...editDraft, dealer: e.target.value })} style={{ ...inputStyle, width: 130 }}>
@@ -1188,7 +1323,14 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, isAdmi
                         </select>
                       ) : r.dealer ? <Badge text={r.dealer} color={dealerColor(r.dealer)} /> : <Badge text={UNMAPPED} color="#9AA1AC" />}
                     </td>
-                    <td>{editing ? <input value={editDraft.rm} onChange={(e) => setEditDraft({ ...editDraft, rm: e.target.value })} style={{ ...inputStyle, width: 110 }} /> : <span style={{ color: INK_SOFT }}>{r.rm}</span>}</td>
+                    <td>
+                      {editing ? (
+                        <select value={editDraft.rm} onChange={(e) => setEditDraft({ ...editDraft, rm: e.target.value })} style={{ ...inputStyle, width: 110 }}>
+                          <option value="">—</option>
+                          {rmNames.map((r) => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                      ) : <span style={{ color: INK_SOFT }}>{r.rm}</span>}
+                    </td>
                     <td>{editing ? <input value={editDraft.branch} onChange={(e) => setEditDraft({ ...editDraft, branch: e.target.value })} style={{ ...inputStyle, width: 110 }} /> : <span style={{ color: INK_SOFT }}>{r.branch}</span>}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.brokerage)}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", color: r.debit > 0 ? RED : INK_SOFT }}>{r.debit ? fmtFull(r.debit) : "—"}</td>
@@ -1225,13 +1367,23 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, isAdmi
           onConfirm={onWipe}
         />
       )}
+
+      {selectedClient && (
+        <ClientTransactionsModal
+          code={selectedClient.code}
+          name={selectedClient.name}
+          records={allRecords.filter((r) => normCode(r.code) === normCode(selectedClient.code))}
+          onClose={() => setSelectedClient(null)}
+        />
+      )}
     </div>
   );
 }
 
-function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRename, onRemove, onAdd, onAddBulk, onSaveTargets, onWipe }) {
+function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRename, onRemove, onAdd, onAddBulk, onSaveTargets, onWipe, showToast }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("all");
+  const [selectedClient, setSelectedClient] = useState(null);
   const [newDealer, setNewDealer] = useState("");
   const [editing, setEditing] = useState(null);
   const [editName, setEditName] = useState("");
@@ -1259,6 +1411,11 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
 
   const now = new Date();
   const y = now.getFullYear(), m = now.getMonth(), q = quarterOf(now);
+  const rmSplitPct = targets.rmSplitPct ?? 50;
+  // Total = undivided brokerage attributed to the dealer (unchanged, drives the
+  // monthly target progress bar). Net = the dealer's own share after subtracting
+  // whatever the mapped RM takes per splitShares() — the same split used in the
+  // RM/Dealer split table below.
   const brokerageByDealer = useMemo(() => {
     const map = {};
     allRecords.forEach((r) => {
@@ -1272,6 +1429,21 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
     return map;
   }, [allRecords, period]);
 
+  const netBrokerageByDealer = useMemo(() => {
+    const map = {};
+    allRecords.forEach((r) => {
+      const d = parseISO(r.date);
+      const match = period === "all" ? true
+        : period === "month" ? (d.getFullYear() === y && d.getMonth() === m)
+        : period === "quarter" ? (d.getFullYear() === y && quarterOf(d) === q)
+        : (d.getFullYear() === y);
+      if (!match) return;
+      const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
+      map[r.dealer] = (map[r.dealer] || 0) + (r.netBrok * dealerPct) / 100;
+    });
+    return map;
+  }, [allRecords, period, rmSplitPct]);
+
   const clientCount = useMemo(() => {
     const c = {};
     master.forEach((m) => { if (m.dealer) c[m.dealer] = (c[m.dealer] || 0) + 1; });
@@ -1279,7 +1451,7 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
   }, [master]);
 
   const rows = dealerNames.filter((d) => !search || d.toLowerCase().includes(search.toLowerCase())).map((d) => ({
-    dealer: d, clients: clientCount[d] || 0, brokerage: brokerageByDealer[d] || 0, target: targets.dealerMonthly?.[d] || 0,
+    dealer: d, clients: clientCount[d] || 0, brokerage: brokerageByDealer[d] || 0, netBrokerage: netBrokerageByDealer[d] || 0, target: targets.dealerMonthly?.[d] || 0,
   })).sort((a, b) => b.brokerage - a.brokerage);
 
   const saveTarget = (dealer) => {
@@ -1288,7 +1460,6 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
   };
 
   const [splitSearch, setSplitSearch] = useState("");
-  const rmSplitPct = targets.rmSplitPct ?? 50;
 
   const brokerageByClient = useMemo(() => {
     const map = {};
@@ -1389,7 +1560,7 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
         <SectionTitle>Dealer performance ({period})</SectionTitle>
         <div style={{ overflowX: "auto" }}>
           <table>
-            <thead><tr><th>Dealer</th><th>Clients</th><th>Net Brokerage</th><th>Monthly Target</th><th style={{ width: 150 }}>Progress</th>{isAdmin && <th></th>}</tr></thead>
+            <thead><tr><th>Dealer</th><th>Clients</th><th>Total Brokerage</th><th>Net Brokerage</th><th>Monthly Target</th><th style={{ width: 150 }}>Progress</th>{isAdmin && <th></th>}</tr></thead>
             <tbody>
               {rows.map((r) => {
                 const monthPct = targets.dealerMonthly?.[r.dealer] > 0 && period === "month" ? ((brokerageByDealer[r.dealer] || 0) / targets.dealerMonthly[r.dealer]) * 100 : null;
@@ -1406,6 +1577,7 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
                     </td>
                     <td>{r.clients}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.brokerage)}</td>
+                    <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.netBrokerage)}</td>
                     <td>
                       {isAdmin ? (
                         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -1426,7 +1598,7 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
                   </tr>
                 );
               })}
-              {rows.length === 0 && <tr><td colSpan={6} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealers yet — add one above.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={7} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealers yet — add one above.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -1450,8 +1622,10 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
               {splitRows.map((r) => (
                 <tr key={r.code}>
                   <td>
-                    <div style={{ fontWeight: 600 }}>{r.name || r.code}</div>
-                    <div style={{ fontSize: 11, color: INK_SOFT }}>{r.code}</div>
+                    <button onClick={() => setSelectedClient({ code: r.code, name: r.name })} style={{ border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+                      <div style={{ fontWeight: 600, color: BLUE }}>{r.name || r.code}</div>
+                      <div style={{ fontSize: 11, color: INK_SOFT }}>{r.code}</div>
+                    </button>
                   </td>
                   <td>{r.dealer && r.dealer !== UNMAPPED ? <Badge text={r.dealer} color={dealerColor(r.dealer)} /> : <Badge text={UNMAPPED} color="#9AA1AC" />}</td>
                   <td style={{ color: INK_SOFT }}>{r.rm || "—"}</td>
@@ -1473,6 +1647,187 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
         <DangerZone
           title="Remove all dealers"
           description={`Permanently deletes all ${dealerNames.length} dealer(s) and their monthly targets. Clients currently assigned to a dealer become Unmapped instead of being deleted.`}
+          confirmWord="DELETE"
+          onConfirm={onWipe}
+        />
+      )}
+
+      {selectedClient && (
+        <ClientTransactionsModal
+          code={selectedClient.code}
+          name={selectedClient.name}
+          records={allRecords.filter((r) => normCode(r.code) === normCode(selectedClient.code))}
+          onClose={() => setSelectedClient(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function RmsTab({ master, rmNames, allRecords, targets, isAdmin, onRename, onRemove, onAdd, onAddBulk, onWipe, showToast }) {
+  const [search, setSearch] = useState("");
+  const [period, setPeriod] = useState("all");
+  const [newRm, setNewRm] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const inputRef = useRef(null);
+  const bulkFileRef = useRef(null);
+
+  const submitNewRm = () => { onAdd(newRm.trim()); setNewRm(""); };
+
+  const onBulkFile = async (file) => {
+    if (!file) return;
+    const wb = await readWorkbook(file);
+    const sheetName = wb.SheetNames[0];
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, raw: true });
+    const dataRows = rows.length && normHeader(rows[0]?.[0]).includes("rm") ? rows.slice(1) : rows;
+    const names = dataRows
+      .map((row) => String((row && row[0]) ?? "").trim())
+      .filter(Boolean)
+      .filter((v, i, arr) => arr.indexOf(v) === i);
+    if (!names.length) { showToast("No RM names found in file", "red"); return; }
+    await onAddBulk(names);
+    setBulkOpen(false);
+  };
+
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth(), q = quarterOf(now);
+  const rmSplitPct = targets.rmSplitPct ?? 50;
+
+  // Each RM's Net Brokerage is their share of every client mapped to them,
+  // via the same splitShares() used in the Dealers tab's split table.
+  const netBrokerageByRm = useMemo(() => {
+    const map = {};
+    const masterByCode = {};
+    master.forEach((mm) => { masterByCode[normCode(mm.code)] = mm; });
+    allRecords.forEach((r) => {
+      const mm = masterByCode[normCode(r.code)];
+      if (!mm || !mm.rm) return;
+      const d = parseISO(r.date);
+      const match = period === "all" ? true
+        : period === "month" ? (d.getFullYear() === y && d.getMonth() === m)
+        : period === "quarter" ? (d.getFullYear() === y && quarterOf(d) === q)
+        : (d.getFullYear() === y);
+      if (!match) return;
+      const { rmPct } = splitShares(mm.dealer, mm.rm, rmSplitPct);
+      map[mm.rm] = (map[mm.rm] || 0) + (r.netBrok * rmPct) / 100;
+    });
+    return map;
+  }, [master, allRecords, period, rmSplitPct, y, m, q]);
+
+  const clientCount = useMemo(() => {
+    const c = {};
+    master.forEach((mm) => { if (mm.rm) c[mm.rm] = (c[mm.rm] || 0) + 1; });
+    return c;
+  }, [master]);
+
+  const rows = rmNames.filter((r) => !search || r.toLowerCase().includes(search.toLowerCase())).map((r) => ({
+    rm: r, clients: clientCount[r] || 0, netBrokerage: netBrokerageByRm[r] || 0,
+  })).sort((a, b) => b.netBrokerage - a.netBrokerage);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {["month", "quarter", "year", "all"].map((p) => (
+            <button key={p} onClick={() => setPeriod(p)} style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${period === p ? ROSE : LINE}`, background: period === p ? ROSE_SOFT : "#fff", color: period === p ? ROSE : INK_SOFT, fontSize: 12.5, fontWeight: 700, cursor: "pointer", textTransform: "capitalize" }}>
+              {p === "all" ? "All time" : p}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div className="dt-search-wrap" style={{ position: "relative" }}>
+            <Search size={14} style={{ position: "absolute", left: 10, top: 10, color: INK_SOFT }} />
+            <input className="dt-search" placeholder="Search RM" value={search} onChange={(e) => setSearch(e.target.value)} style={{ ...inputStyle, paddingLeft: 30, width: 200 }} />
+          </div>
+          {isAdmin && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <input
+                ref={inputRef}
+                placeholder="New RM name"
+                value={newRm}
+                onChange={(e) => setNewRm(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") submitNewRm(); }}
+                style={inputStyle}
+              />
+              <button onClick={submitNewRm} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: "none", background: ROSE, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                <Plus size={15} /> Add RM
+              </button>
+              <button onClick={() => setBulkOpen((o) => !o)} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: `1px solid ${ROSE}`, background: bulkOpen ? ROSE_SOFT : "#fff", color: ROSE, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                <UploadCloud size={15} /> Bulk upload
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {isAdmin && bulkOpen && (
+        <Card style={{ padding: 18 }}>
+          <SectionTitle>Bulk upload RMs</SectionTitle>
+          <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+            Upload a .xlsx or .csv file with one RM name per row in the first column. Duplicates and blank rows are skipped automatically.
+          </div>
+          <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); onBulkFile(e.dataTransfer.files[0]); }}
+            onClick={() => bulkFileRef.current?.click()}
+            style={{ border: `2px dashed ${LINE}`, borderRadius: 12, padding: "24px 20px", textAlign: "center", cursor: "pointer", background: "#FAFBFC" }}
+          >
+            <FileSpreadsheet size={24} color={INK_SOFT} style={{ marginBottom: 8 }} />
+            <div style={{ fontSize: 13.5, fontWeight: 600 }}>Drop the .xlsx or .csv file here, or click to browse</div>
+            <input ref={bulkFileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={(e) => onBulkFile(e.target.files[0])} />
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <button onClick={() => downloadCSV("rms_sample.csv", ["RM Name"], [["Meera"], ["Sana Patel"]])} style={{ border: "none", background: "none", color: ROSE, fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 }}>
+              Download sample CSV template
+            </button>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 18 }}>
+        <SectionTitle>RM performance ({period})</SectionTitle>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+          Net Brokerage is each RM's share of their mapped clients' brokerage, per the RM/Dealer split configured in the Targets tab.
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead><tr><th>RM</th><th>Clients</th><th>Net Brokerage</th>{isAdmin && <th></th>}</tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.rm}>
+                  <td>
+                    {editing === r.rm ? (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input value={editName} onChange={(e) => setEditName(e.target.value)} style={{ ...inputStyle, width: 140 }} />
+                        <button onClick={() => { onRename(r.rm, editName.trim()); setEditing(null); }} style={{ border: "none", background: "none", cursor: "pointer", color: EMERALD }}><Check size={15} /></button>
+                        <button onClick={() => setEditing(null)} style={{ border: "none", background: "none", cursor: "pointer", color: INK_SOFT }}><X size={15} /></button>
+                      </div>
+                    ) : <Badge text={r.rm} color={dealerColor(r.rm)} />}
+                  </td>
+                  <td>{r.clients}</td>
+                  <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.netBrokerage)}</td>
+                  {isAdmin && (
+                    <td>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={() => { setEditing(r.rm); setEditName(r.rm); }} style={{ border: "none", background: "none", cursor: "pointer", color: BLUE }}><Pencil size={14} /></button>
+                        <button onClick={() => onRemove(r.rm)} style={{ border: "none", background: "none", cursor: "pointer", color: RED }}><Trash2 size={14} /></button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {rows.length === 0 && <tr><td colSpan={4} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No RMs yet — add one above.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {isAdmin && rmNames.length > 0 && (
+        <DangerZone
+          title="Remove all RMs"
+          description={`Permanently deletes all ${rmNames.length} RM(s). Clients currently assigned to an RM become unmapped instead of being deleted.`}
           confirmWord="DELETE"
           onConfirm={onWipe}
         />
