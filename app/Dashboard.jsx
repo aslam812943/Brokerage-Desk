@@ -2265,7 +2265,7 @@ function TargetsTab({ targets, onSave, onWipeUsers, showToast }) {
           Every Kotak upload is stored at its raw (100%) figure — this percentage is applied wherever brokerage totals are shown, for every Kotak record ever uploaded. Changing it recalculates all of them immediately, no re-upload needed.
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          {[85, 100].map((p) => (
+          {[85].map((p) => (
             <button
               key={p}
               onClick={() => setKotakSharePct(p)}
