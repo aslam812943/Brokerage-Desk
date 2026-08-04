@@ -873,11 +873,22 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
     if (p === "year") return d.getFullYear() === y;
     return true;
   };
+  const rmSplitPct = targets.rmSplitPct ?? 50;
   const sum = (arr) => arr.reduce((s, r) => s + r.netBrok, 0);
-  const dayTotal = sum(allRecords.filter((r) => inPeriod(r, "day")));
-  const monthTotal = sum(allRecords.filter((r) => inPeriod(r, "month")));
-  const quarterTotal = sum(allRecords.filter((r) => inPeriod(r, "quarter")));
-  const yearTotal = sum(allRecords.filter((r) => inPeriod(r, "year")));
+  // For a dealer (VIEWER) login, KPI totals show their Net share after the RM
+  // split — the same figure as the Dealers tab and the dealer-share chart
+  // below, so a dealer's own dashboard doesn't show two different "my
+  // brokerage" numbers. Admin sees the undivided company-wide total, since
+  // the split only reattributes money between dealer/RM, not out of the
+  // company.
+  const netSum = (arr) => isAdmin ? sum(arr) : arr.reduce((s, r) => {
+    const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
+    return s + (r.netBrok * dealerPct) / 100;
+  }, 0);
+  const dayTotal = netSum(allRecords.filter((r) => inPeriod(r, "day")));
+  const monthTotal = netSum(allRecords.filter((r) => inPeriod(r, "month")));
+  const quarterTotal = netSum(allRecords.filter((r) => inPeriod(r, "quarter")));
+  const yearTotal = netSum(allRecords.filter((r) => inPeriod(r, "year")));
 
   const monthlyTarget = targets.monthly || 0;
   const monthPct = monthlyTarget > 0 ? (monthTotal / monthlyTarget) * 100 : null;
@@ -887,7 +898,6 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
   const activeRecs = allRecords.filter((r) => inPeriod(r, period));
   // Dealer-wise figures show each dealer's Net share (after the RM split), not
   // the undivided Total — see DealersTab for the Total/Net breakdown.
-  const rmSplitPct = targets.rmSplitPct ?? 50;
   const dealerMap = {};
   activeRecs.forEach((r) => {
     const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
@@ -900,14 +910,17 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
   const topClients = Object.values(clientMap).sort((a, b) => b.value - a.value).slice(0, 10);
 
   const byDate = {};
-  allRecords.forEach((r) => { byDate[r.date] = (byDate[r.date] || 0) + r.netBrok; });
+  allRecords.forEach((r) => {
+    const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
+    byDate[r.date] = (byDate[r.date] || 0) + (isAdmin ? r.netBrok : (r.netBrok * dealerPct) / 100);
+  });
   const trend = dailyDates.slice(-30).map((d) => ({ date: parseISO(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }), value: Math.round(byDate[d] || 0) }));
 
   const unmapped = dealerRows.find((d) => d.dealer === UNMAPPED);
 
   const latestIdx = dailyDates.indexOf(latestDate);
   const prevDate = latestIdx > 0 ? dailyDates[latestIdx - 1] : null;
-  const prevTotal = prevDate ? sum(allRecords.filter((r) => r.date === prevDate)) : null;
+  const prevTotal = prevDate ? netSum(allRecords.filter((r) => r.date === prevDate)) : null;
 
   const todayRecs = allRecords.filter((r) => r.date === latestDate);
   const todayFiltered = todayRecs.filter((r) => {
