@@ -7,6 +7,10 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // ~2-3k clients each) can already be several thousand rows, so this needs to
 // stay well above realistic multi-month totals.
 const MAX_RECORDS = 5_000_000;
+// Matches the normCode() convention used client-side (Dashboard.jsx) for
+// joining MasterClient <-> DebitRecord by code — codes are entered by hand
+// across separate uploads and can differ in case/whitespace.
+const normCode = (c) => String(c || "").trim().toUpperCase().replace(/\s+/g, "");
 
 export async function GET(req) {
   const { session, response } = await requireSession();
@@ -19,7 +23,7 @@ export async function GET(req) {
       where: { dealer: { equals: session.user.name, mode: "insensitive" } },
       select: { code: true },
     });
-    allowedCodes = new Set(clients.map((c) => c.code));
+    allowedCodes = new Set(clients.map((c) => normCode(c.code)));
   }
 
   // Optional date-range filter — ?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -40,7 +44,7 @@ export async function GET(req) {
 
   const byDate = {};
   for (const r of rows) {
-    if (allowedCodes && !allowedCodes.has(r.code)) continue;
+    if (allowedCodes && !allowedCodes.has(normCode(r.code))) continue;
     if (!byDate[r.date]) byDate[r.date] = [];
     byDate[r.date].push({ code: r.code, name: r.name, debit: r.debit });
   }
