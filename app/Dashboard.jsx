@@ -10,7 +10,8 @@ import {
   LayoutDashboard, UploadCloud, Users, Target, TrendingUp,
   Calendar, Trash2, Plus, Search, AlertTriangle, CheckCircle2,
   FileSpreadsheet, Building2, IndianRupee, Pencil, X, Check,
-  ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks, KeyRound, UserCog
+  ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks, KeyRound, UserCog,
+  Download, FileSearch
 } from "lucide-react";
 
 /* ---------- design tokens ---------- */
@@ -634,6 +635,7 @@ export default function App() {
     { id: "rms", label: "RMs", icon: UserCog, color: ROSE, adminOnly: false },
     { id: "tasks", label: "Monthly Tasks", icon: ListChecks, color: GOLD, adminOnly: false },
     { id: "upload", label: "Upload", icon: UploadCloud, color: GOLD, adminOnly: true },
+    { id: "missingfinder", label: "Missing Finder", icon: FileSearch, color: RED, adminOnly: true },
     { id: "targets", label: "Targets", icon: Target, color: ROSE, adminOnly: true },
   ];
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
@@ -711,7 +713,7 @@ export default function App() {
         )}
         {tab === "dealers" && (
           <DealersTab
-            master={master} dealerNames={dealerNames} allRecords={allRecords} targets={targets}
+            master={master} dealerNames={dealerNames} allRecords={allRecords} targets={targets} latestDebitByCode={latestDebitByCode}
             isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk} onSaveTargets={saveTargets}
             onWipe={wipeDealers} showToast={showToast}
           />
@@ -728,6 +730,12 @@ export default function App() {
             dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData} masterByCode={masterByCode}
             onSaveDaily={saveDaily} onDeleteDaily={deleteDaily} onSaveDebit={saveDebit} onDeleteDebit={deleteDebit} showToast={showToast}
             kotakSharePct={targets.kotakSharePct ?? 85}
+          />
+        )}
+        {tab === "missingfinder" && isAdmin && (
+          <MissingFinderTab
+            master={master} dailyDates={dailyDates} dailyData={dailyData}
+            onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
           />
         )}
         {tab === "targets" && isAdmin && <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
@@ -1393,7 +1401,7 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, rmName
   );
 }
 
-function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRename, onRemove, onAdd, onAddBulk, onSaveTargets, onWipe, showToast }) {
+function DealersTab({ master, dealerNames, allRecords, targets, latestDebitByCode, isAdmin, onRename, onRemove, onAdd, onAddBulk, onSaveTargets, onWipe, showToast }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("all");
   const [selectedClient, setSelectedClient] = useState(null);
@@ -1487,6 +1495,35 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
     return map;
   }, [allRecords, period]);
 
+  // Exports every client mapped to one dealer as an .xlsx, honoring the
+  // currently selected period so the file matches what's on screen.
+  const exportDealerClients = (dealerName) => {
+    const rows = master
+      .filter((mm) => mm.dealer === dealerName)
+      .map((mm) => {
+        const brokerage = brokerageByClient[normCode(mm.code)] || 0;
+        const { dealerPct, rmPct } = splitShares(mm.dealer, mm.rm, rmSplitPct);
+        return {
+          "Client Code": mm.code,
+          "Client Name": mm.name,
+          "RM": mm.rm || "",
+          "Branch": mm.branch || "",
+          "Debit Balance": latestDebitByCode?.[normCode(mm.code)] || 0,
+          "Total Brokerage": Math.round(brokerage * 100) / 100,
+          "Dealer Share": Math.round(((brokerage * dealerPct) / 100) * 100) / 100,
+          "RM Share": Math.round(((brokerage * rmPct) / 100) * 100) / 100,
+        };
+      })
+      .sort((a, b) => b["Total Brokerage"] - a["Total Brokerage"]);
+    if (!rows.length) { showToast(`No clients found for ${dealerName}`, "gold"); return; }
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, dealerName.slice(0, 31) || "Clients");
+    const safeName = dealerName.replace(/[^a-z0-9]+/gi, "_");
+    XLSX.writeFile(wb, `${safeName}_clients_${period}.xlsx`);
+    showToast(`Exported ${rows.length} client(s) for ${dealerName}`);
+  };
+
   // Split table: one row per client mapped to a dealer and/or RM, showing how
   // their period brokerage divides between the two per splitShares().
   const splitRows = useMemo(() => {
@@ -1573,7 +1610,7 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
         <SectionTitle>Dealer performance ({period})</SectionTitle>
         <div style={{ overflowX: "auto" }}>
           <table>
-            <thead><tr><th>Dealer</th><th>Clients</th><th>Total Brokerage</th><th>Net Brokerage</th><th>Monthly Target</th><th style={{ width: 150 }}>Progress</th>{isAdmin && <th></th>}</tr></thead>
+            <thead><tr><th>Dealer</th><th>Clients</th><th>Total Brokerage</th><th>Net Brokerage</th><th>Monthly Target</th><th style={{ width: 150 }}>Progress</th><th></th>{isAdmin && <th></th>}</tr></thead>
             <tbody>
               {rows.map((r) => {
                 const monthPct = targets.dealerMonthly?.[r.dealer] > 0 && period === "month" ? ((brokerageByDealer[r.dealer] || 0) / targets.dealerMonthly[r.dealer]) * 100 : null;
@@ -1600,6 +1637,11 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
                       ) : (r.target ? fmtFull(r.target) : "—")}
                     </td>
                     <td>{monthPct !== null ? <div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ flex: 1 }}><ProgressBar pct={monthPct} /></div><span style={{ fontSize: 11.5, color: INK_SOFT, width: 34 }}>{monthPct.toFixed(0)}%</span></div> : <span style={{ color: "#B7BCC5", fontSize: 12 }}>{period === "month" ? "no target" : "monthly only"}</span>}</td>
+                    <td>
+                      <button onClick={() => exportDealerClients(r.dealer)} title={`Export ${r.dealer}'s clients`} style={{ display: "flex", gap: 5, alignItems: "center", border: `1px solid ${VIOLET}`, background: "#fff", color: VIOLET, borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                        <Download size={13} /> Export
+                      </button>
+                    </td>
                     {isAdmin && (
                       <td>
                         <div style={{ display: "flex", gap: 8 }}>
@@ -1611,7 +1653,7 @@ function DealersTab({ master, dealerNames, allRecords, targets, isAdmin, onRenam
                   </tr>
                 );
               })}
-              {rows.length === 0 && <tr><td colSpan={7} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealers yet — add one above.</td></tr>}
+              {rows.length === 0 && <tr><td colSpan={isAdmin ? 8 : 7} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealers yet — add one above.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -2244,6 +2286,202 @@ function UsersSection({ onWipeUsers, showToast }) {
         />
       )}
     </>
+  );
+}
+
+// Reconciliation tool: upload an SW/Kotak report and diff it against what's
+// already in the system for that date+source, without touching any data
+// until the admin explicitly chooses to save the gaps it finds.
+function MissingFinderTab({ master, dailyDates, dailyData, onSaveDaily, onSaveMaster, showToast }) {
+  const [source, setSource] = useState("SW");
+  const [dragOver, setDragOver] = useState(false);
+  const [result, setResult] = useState(null);
+  const inputRef = useRef(null);
+
+  const masterByCode = useMemo(() => {
+    const map = {};
+    master.forEach((m) => (map[normCode(m.code)] = m));
+    return map;
+  }, [master]);
+
+  const onFile = async (file) => {
+    if (!file) return;
+    const wb = await readWorkbook(file);
+    const sheetName = wb.SheetNames[0];
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, raw: true });
+    const { records, error } = parseDailySheet(rows);
+    if (error) { showToast(error, "red"); return; }
+    if (!records.length) { showToast("No client rows found in file", "red"); return; }
+
+    const detected = detectSourceFromFilename(file.name);
+    const effectiveSource = detected || source;
+    if (detected && detected !== source) setSource(detected);
+    const guessDate = guessDateFromFilename(sheetName.match(/\d{6,8}/) ? sheetName : file.name);
+    const iso = isoDate(guessDate);
+
+    const existingForSource = (dailyData[iso] || []).filter((r) => (r.source || "") === effectiveSource);
+    const existingByCode = {};
+    existingForSource.forEach((r) => (existingByCode[normCode(r.code)] = r));
+
+    const seen = new Set();
+    const missingCustomers = [];
+    const missingBrokerage = [];
+    const mismatched = [];
+    for (const r of records) {
+      const key = normCode(r.code);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (!masterByCode[key]) missingCustomers.push(r);
+      const ex = existingByCode[key];
+      if (!ex) missingBrokerage.push(r);
+      else if (Math.round(ex.netBrok * 100) !== Math.round(r.netBrok * 100)) mismatched.push({ ...r, dbNetBrok: ex.netBrok });
+    }
+    setResult({ fileName: file.name, source: effectiveSource, date: iso, total: records.length, missingCustomers, missingBrokerage, mismatched });
+  };
+
+  const addMissingCustomers = async () => {
+    if (!result?.missingCustomers.length) return;
+    const existing = new Set(master.map((m) => normCode(m.code)));
+    const additions = result.missingCustomers.filter((r) => !existing.has(normCode(r.code))).map((r) => ({ code: r.code, name: r.name, dealer: "", rm: "", branch: "" }));
+    if (!additions.length) return;
+    await onSaveMaster([...master, ...additions]);
+    showToast(`Added ${additions.length} client(s) to the client list — assign a dealer/RM from the Clients tab`);
+    setResult((prev) => (prev ? { ...prev, missingCustomers: [] } : prev));
+  };
+
+  const saveMissingBrokerage = async () => {
+    if (!result?.missingBrokerage.length) return;
+    const existing = dailyData[result.date] || [];
+    const sameSourceExisting = existing.filter((r) => (r.source || "") === result.source);
+    const merged = [...sameSourceExisting, ...result.missingBrokerage.map((r) => ({ ...r, source: result.source }))];
+    await onSaveDaily(result.date, merged);
+    showToast(`Saved ${result.missingBrokerage.length} missing brokerage row(s) for ${result.date}`);
+    setResult((prev) => (prev ? { ...prev, missingBrokerage: [] } : prev));
+  };
+
+  const exportList = (label, rows, columns) => {
+    if (!result || !rows.length) return;
+    const data = rows.map((r) => { const o = {}; columns.forEach(([key, header]) => (o[header] = r[key])); return o; });
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, label.slice(0, 31));
+    XLSX.writeFile(wb, `${label.replace(/\s+/g, "_").toLowerCase()}_${result.date}_${result.source}.xlsx`);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      <Card style={{ padding: 22 }}>
+        <SectionTitle>Find missing customers &amp; brokerage</SectionTitle>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 14 }}>
+          Upload an SW or Kotak brokerage report (same format as Daily Brokerage — Client Code, Client Name, Net Brokerage). It's compared against the client list and the report already saved for that date, without saving anything itself.
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+          <span style={{ fontSize: 12.5, color: INK_SOFT, fontWeight: 600 }}>Source:</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["SW", "KOTAK"].map((s) => (
+              <button key={s} onClick={() => setSource(s)} style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${source === s ? RED : LINE}`, background: source === s ? RED_SOFT : "#fff", color: source === s ? RED : INK_SOFT, fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+                {s === "KOTAK" ? "Kotak" : "SW"}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); onFile(e.dataTransfer.files[0]); }}
+          onClick={() => inputRef.current?.click()}
+          style={{ border: `2px dashed ${dragOver ? RED : LINE}`, borderRadius: 12, padding: "34px 20px", textAlign: "center", cursor: "pointer", background: dragOver ? RED_SOFT : "#FAFBFC" }}>
+          <FileSearch size={28} color={INK_SOFT} style={{ marginBottom: 10 }} />
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Drop the .xlsx or .csv file here, or click to browse</div>
+          <div style={{ fontSize: 12.5, color: INK_SOFT }}>Needs: Client Code, Client Name, Net Brokerage.</div>
+          <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={(e) => onFile(e.target.files[0])} />
+        </div>
+      </Card>
+
+      {result && (
+        <>
+          <div style={{ fontSize: 12.5, color: INK_SOFT }}>
+            Checked <strong>{result.fileName}</strong> — {result.total} rows, {result.source === "KOTAK" ? "Kotak" : "SW"}, dated {result.date} — against {dailyDates.includes(result.date) ? "the report already saved for this date" : "no report yet saved for this date"}.
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+            <KPI label="Missing customers" value={String(result.missingCustomers.length)} sub="in file, not in client list" tone="red" icon={Users} />
+            <KPI label="Missing brokerage" value={String(result.missingBrokerage.length)} sub="in file, not in database" tone="gold" icon={IndianRupee} />
+            <KPI label="Value mismatches" value={String(result.mismatched.length)} sub="differ from saved amount" tone="violet" icon={AlertTriangle} />
+          </div>
+
+          <Card style={{ padding: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+              <SectionTitle>Missing customers — in the file but not in the client list</SectionTitle>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => exportList("Missing customers", result.missingCustomers, [["code", "Client Code"], ["name", "Client Name"], ["netBrok", "Net Brokerage"]])} disabled={!result.missingCustomers.length} style={{ display: "flex", gap: 5, alignItems: "center", border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: result.missingCustomers.length ? "pointer" : "not-allowed", opacity: result.missingCustomers.length ? 1 : 0.5 }}>
+                  <Download size={13} /> Export
+                </button>
+                <button onClick={addMissingCustomers} disabled={!result.missingCustomers.length} style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: result.missingCustomers.length ? EMERALD : "#C9CDD4", color: "#fff", fontWeight: 700, fontSize: 12, cursor: result.missingCustomers.length ? "pointer" : "not-allowed" }}>
+                  Add all to client list
+                </button>
+              </div>
+            </div>
+            <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto" }}>
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Net Brokerage</th></tr></thead>
+                <tbody>
+                  {result.missingCustomers.map((r, i) => (
+                    <tr key={`${r.code}-${i}`}><td>{r.code}</td><td>{r.name}</td><td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.netBrok)}</td></tr>
+                  ))}
+                  {result.missingCustomers.length === 0 && <tr><td colSpan={3} style={{ color: INK_SOFT, textAlign: "center", padding: 16 }}>None — every client in the file is already in the client list.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          <Card style={{ padding: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+              <SectionTitle>Missing brokerage — in the file but not saved for {result.date} ({result.source === "KOTAK" ? "Kotak" : "SW"})</SectionTitle>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => exportList("Missing brokerage", result.missingBrokerage, [["code", "Client Code"], ["name", "Client Name"], ["netBrok", "Net Brokerage"]])} disabled={!result.missingBrokerage.length} style={{ display: "flex", gap: 5, alignItems: "center", border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: result.missingBrokerage.length ? "pointer" : "not-allowed", opacity: result.missingBrokerage.length ? 1 : 0.5 }}>
+                  <Download size={13} /> Export
+                </button>
+                <button onClick={saveMissingBrokerage} disabled={!result.missingBrokerage.length} style={{ padding: "6px 14px", borderRadius: 7, border: "none", background: result.missingBrokerage.length ? EMERALD : "#C9CDD4", color: "#fff", fontWeight: 700, fontSize: 12, cursor: result.missingBrokerage.length ? "pointer" : "not-allowed" }}>
+                  Save to database
+                </button>
+              </div>
+            </div>
+            <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto" }}>
+              <table>
+                <thead><tr><th>Code</th><th>Name</th><th>Net Brokerage</th></tr></thead>
+                <tbody>
+                  {result.missingBrokerage.map((r, i) => (
+                    <tr key={`${r.code}-${i}`}><td>{r.code}</td><td>{r.name}</td><td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.netBrok)}</td></tr>
+                  ))}
+                  {result.missingBrokerage.length === 0 && <tr><td colSpan={3} style={{ color: INK_SOFT, textAlign: "center", padding: 16 }}>None — every client in the file is already saved for this date &amp; source.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+
+          {result.mismatched.length > 0 && (
+            <Card style={{ padding: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+                <SectionTitle>Value mismatches — saved amount differs from the file</SectionTitle>
+                <button onClick={() => exportList("Value mismatches", result.mismatched, [["code", "Client Code"], ["name", "Client Name"], ["dbNetBrok", "Saved Net Brokerage"], ["netBrok", "File Net Brokerage"]])} style={{ display: "flex", gap: 5, alignItems: "center", border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, borderRadius: 7, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                  <Download size={13} /> Export
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: INK_SOFT, marginBottom: 10 }}>Re-upload this source for this date from the Upload tab to overwrite these with the file's values.</div>
+              <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto" }}>
+                <table>
+                  <thead><tr><th>Code</th><th>Name</th><th>Saved Amount</th><th>File Amount</th></tr></thead>
+                  <tbody>
+                    {result.mismatched.map((r, i) => (
+                      <tr key={`${r.code}-${i}`}><td>{r.code}</td><td>{r.name}</td><td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.dbNetBrok)}</td><td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.netBrok)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
