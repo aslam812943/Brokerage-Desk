@@ -170,20 +170,6 @@ async function storageDelete(key, source) {
     return false;
   } catch (e) { return false; }
 }
-async function storageList(prefix) {
-  try {
-    if (prefix === "daily:") {
-      const all = (await apiGet("/api/daily")) ?? {};
-      return Object.keys(all).map((d) => `daily:${d}`);
-    }
-    if (prefix === "debit:") {
-      const all = (await apiGet("/api/debit")) ?? {};
-      return Object.keys(all).map((d) => `debit:${d}`);
-    }
-    return [];
-  } catch (e) { return []; }
-}
-
 function normHeader(h) { return String(h || "").trim().toLowerCase(); }
 function findCol(headers, ...needles) {
   for (const n of needles) { const i = headers.findIndex((h) => h.includes(n)); if (i >= 0) return i; }
@@ -303,6 +289,15 @@ function EmptyState({ icon: Icon, title, text }) {
     </Card>
   );
 }
+// Shown for the first moment a Clients/Dealers/RMs/Upload/Missing Finder tab
+// is opened, while its one-time full daily/debit history fetch is in flight.
+function HistoryLoadingPane() {
+  return (
+    <Card style={{ padding: 50, textAlign: "center", color: INK_SOFT, fontSize: 13.5 }}>
+      Loading upload history…
+    </Card>
+  );
+}
 function ProgressBar({ pct }) {
   const color = pct >= 100 ? EMERALD : pct >= 60 ? GOLD : RED;
   return <div style={{ height: 7, background: "#EDEFF2", borderRadius: 99, overflow: "hidden" }}><div style={{ height: "100%", width: `${Math.min(100, Math.max(2, pct))}%`, background: color, borderRadius: 99, transition: "width .4s ease" }} /></div>;
@@ -394,54 +389,71 @@ export default function App() {
   const showToast = (msg, tone = "emerald") => { setToast({ msg, tone }); setTimeout(() => setToast(null), 3200); };
   const isAdmin = role === "admin";
 
+  // Only the small registries load unconditionally — master/dealers/rms/targets
+  // are bounded by client count, not upload history, so there's no reason to
+  // gate the whole app behind them being ready.
   useEffect(() => {
     (async () => {
-      const m = await storageGet("master-clients"); if (m) setMaster(m);
-      const dr = await storageGet("dealers-list"); if (dr) setDealerRegistry(dr);
-      const rr = await storageGet("rms-list"); if (rr) setRmRegistry(rr);
-      const t = await storageGet("targets"); if (t) setTargets(t);
-
-      const dKeys = await storageList("daily:");
-      const dDates = dKeys.map((k) => k.replace("daily:", "")).sort();
-      setDailyDates(dDates);
-      const dData = {};
-      for (const d of dDates) { const recs = await storageGet(`daily:${d}`); if (recs) dData[d] = recs; }
-      setDailyData(dData);
-
-      const bKeys = await storageList("debit:");
-      const bDates = bKeys.map((k) => k.replace("debit:", "")).sort();
-      setDebitDates(bDates);
-      const bData = {};
-      for (const d of bDates) { const recs = await storageGet(`debit:${d}`); if (recs) bData[d] = recs; }
-      setDebitData(bData);
-
+      // /api/daily/dates and /api/debit/latest are both cheap — bounded by
+      // dates/clients, not by transaction volume — so both load eagerly
+      // instead of waiting on the lazy full-history fetch below.
+      const [m, dr, rr, t, dates, latestDebit] = await Promise.all([
+        storageGet("master-clients"),
+        storageGet("dealers-list"),
+        storageGet("rms-list"),
+        storageGet("targets"),
+        apiGet("/api/daily/dates"),
+        apiGet("/api/debit/latest"),
+      ]);
+      if (m) setMaster(m);
+      if (dr) setDealerRegistry(dr);
+      if (rr) setRmRegistry(rr);
+      if (t) setTargets(t);
+      if (dates) setDailyDates([...dates].sort());
+      if (latestDebit) setLatestDebitByCode(Object.fromEntries(latestDebit.map((r) => [normCode(r.code), r.debit])));
       setLoading(false);
     })();
   }, []);
+
+  // Full daily/debit history (/api/daily + /api/debit, still whole-table reads)
+  // is only needed by Clients/Dealers/RMs/Upload/Missing Finder, which reduce
+  // over every record client-side — the Dashboard tab fetches its own
+  // pre-aggregated summary instead (see the Dashboard component below) and
+  // never needs this at all. Fetched once, lazily, the first time one of
+  // those tabs is opened, instead of unconditionally on every login.
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    const [dailyByDate, debitByDate] = await Promise.all([apiGet("/api/daily"), apiGet("/api/debit")]);
+    const dData = dailyByDate ?? {};
+    setDailyDates(Object.keys(dData).sort());
+    setDailyData(dData);
+    const bData = debitByDate ?? {};
+    setDebitDates(Object.keys(bData).sort());
+    setDebitData(bData);
+    setHistoryLoaded(true);
+    setHistoryLoading(false);
+  }, []);
+  const HISTORY_TABS = ["upload", "missingfinder"];
+  useEffect(() => {
+    if (HISTORY_TABS.includes(tab) && !historyLoaded && !historyLoading) loadHistory();
+  }, [tab, historyLoaded, historyLoading, loadHistory]);
 
   const masterByCode = useMemo(() => { const map = {}; master.forEach((m) => (map[normCode(m.code)] = m)); return map; }, [master]);
 
   // netBrok is stored raw (as uploaded) for every source — the Kotak share is
   // applied here, at read time, so changing the setting in Targets instantly
   // recalculates every past record instead of needing a backfill each time.
+  // (No more allRecords join here — every tab that needs brokerage now fetches
+  // its own pre-aggregated view; only saveDaily's toast total and UploadTab's
+  // preview still need this raw kotakShare/masterByCode pair.)
   const kotakShare = (targets.kotakSharePct ?? 85) / 100;
-  const allRecords = useMemo(() => {
-    const out = [];
-    for (const d of dailyDates) {
-      for (const r of dailyData[d] || []) {
-        const mm = masterByCode[normCode(r.code)];
-        const netBrok = r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok;
-        out.push({ ...r, date: d, netBrok, dealer: mm && mm.dealer ? mm.dealer : UNMAPPED, rm: mm ? mm.rm : "" });
-      }
-    }
-    return out;
-  }, [dailyDates, dailyData, masterByCode, kotakShare]);
 
-  const latestDebitByCode = useMemo(() => {
-    const map = {};
-    for (const d of debitDates) { for (const r of debitData[d] || []) map[normCode(r.code)] = r.debit; }
-    return map;
-  }, [debitDates, debitData]);
+  // Fetched independently (see the initial-load effect above) via
+  // /api/debit/latest — bounded by client count, so it doesn't need the full
+  // debit history (debitData/debitDates) that only loads lazily.
+  const [latestDebitByCode, setLatestDebitByCode] = useState({});
 
   const dealerNames = useMemo(() => {
     const s = new Set(dealerRegistry);
@@ -704,40 +716,40 @@ export default function App() {
       </div>
 
       <div className="dt-content" style={{ padding: 22 }}>
-        {tab === "dashboard" && <Dashboard allRecords={allRecords} dailyDates={dailyDates} latestDate={latestDate} targets={targets} isAdmin={isAdmin} />}
+        {tab === "dashboard" && <Dashboard master={master} targets={targets} isAdmin={isAdmin} />}
         {tab === "clients" && (
           <ClientsTab
-            master={master} allRecords={allRecords} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
+            master={master} targets={targets} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
             isAdmin={isAdmin} onSave={saveMaster} showToast={showToast} onWipe={wipeClients}
           />
         )}
         {tab === "dealers" && (
           <DealersTab
-            master={master} dealerNames={dealerNames} allRecords={allRecords} targets={targets} latestDebitByCode={latestDebitByCode}
+            master={master} dealerNames={dealerNames} targets={targets} latestDebitByCode={latestDebitByCode}
             isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk} onSaveTargets={saveTargets}
             onWipe={wipeDealers} showToast={showToast}
           />
         )}
         {tab === "rms" && (
           <RmsTab
-            master={master} rmNames={rmNames} allRecords={allRecords} targets={targets}
+            master={master} rmNames={rmNames}
             isAdmin={isAdmin} onRename={renameRm} onRemove={removeRm} onAdd={addRm} onAddBulk={addRmsBulk}
             onWipe={wipeRms} showToast={showToast}
           />
         )}
-        {tab === "upload" && isAdmin && (
+        {tab === "upload" && isAdmin && (historyLoaded ? (
           <UploadTab
             dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData} masterByCode={masterByCode}
             onSaveDaily={saveDaily} onDeleteDaily={deleteDaily} onSaveDebit={saveDebit} onDeleteDebit={deleteDebit} showToast={showToast}
             kotakSharePct={targets.kotakSharePct ?? 85}
           />
-        )}
-        {tab === "missingfinder" && isAdmin && (
+        ) : <HistoryLoadingPane />)}
+        {tab === "missingfinder" && isAdmin && (historyLoaded ? (
           <MissingFinderTab
             master={master} dailyDates={dailyDates} dailyData={dailyData}
             onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
           />
-        )}
+        ) : <HistoryLoadingPane />)}
         {tab === "targets" && isAdmin && <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
         {tab === "tasks" && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
       </div>
@@ -858,79 +870,51 @@ function ForcedPasswordChange({ username, onDone }) {
   );
 }
 
-function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
+// Fetches its own pre-aggregated KPI/trend/dealer/top-client data from
+// /api/dashboard/summary instead of reducing over every DailyRecord the app
+// has ever seen — see the Phase 2 architecture review for why. Only the
+// "Today's upload" detail table needs row-level data, and that's scoped to
+// one date via /api/daily/[date] (Phase 1), joined against the already-loaded
+// (small) client registry.
+function Dashboard({ master, targets, isAdmin }) {
   const [period, setPeriod] = useState("month");
   const [todaySearch, setTodaySearch] = useState("");
-  if (!dailyDates.length) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        <TasksSummaryCard isAdmin={isAdmin} />
-        <EmptyState icon={UploadCloud} title="No data uploaded yet" text="Head to Upload to add your first day's brokerage report — the dashboard fills in automatically." />
-      </div>
-    );
-  }
+  const [summary, setSummary] = useState(null);
+  const [todayRows, setTodayRows] = useState(null);
+  const [todayRowsDate, setTodayRowsDate] = useState(null);
 
-  const latestD = parseISO(latestDate);
-  const y = latestD.getFullYear(), m = latestD.getMonth(), q = quarterOf(latestD);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const s = await apiGet(`/api/dashboard/summary?period=${period}`);
+      if (!cancelled) setSummary(s);
+    })();
+    return () => { cancelled = true; };
+  }, [period]);
 
-  const inPeriod = (rec, p) => {
-    const d = parseISO(rec.date);
-    if (p === "day") return rec.date === latestDate;
-    if (p === "month") return d.getFullYear() === y && d.getMonth() === m;
-    if (p === "quarter") return d.getFullYear() === y && quarterOf(d) === q;
-    if (p === "year") return d.getFullYear() === y;
-    return true;
-  };
-  const rmSplitPct = targets.rmSplitPct ?? 50;
-  const sum = (arr) => arr.reduce((s, r) => s + r.netBrok, 0);
-  // For a dealer (VIEWER) login, KPI totals show their Net share after the RM
-  // split — the same figure as the Dealers tab and the dealer-share chart
-  // below, so a dealer's own dashboard doesn't show two different "my
-  // brokerage" numbers. Admin sees the undivided company-wide total, since
-  // the split only reattributes money between dealer/RM, not out of the
-  // company.
-  const netSum = (arr) => isAdmin ? sum(arr) : arr.reduce((s, r) => {
-    const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
-    return s + (r.netBrok * dealerPct) / 100;
-  }, 0);
-  const dayTotal = netSum(allRecords.filter((r) => inPeriod(r, "day")));
-  const monthTotal = netSum(allRecords.filter((r) => inPeriod(r, "month")));
-  const quarterTotal = netSum(allRecords.filter((r) => inPeriod(r, "quarter")));
-  const yearTotal = netSum(allRecords.filter((r) => inPeriod(r, "year")));
+  const masterByCode = useMemo(() => { const map = {}; master.forEach((mm) => (map[normCode(mm.code)] = mm)); return map; }, [master]);
+  const kotakShare = (targets.kotakSharePct ?? 85) / 100;
 
-  const monthlyTarget = targets.monthly || 0;
-  const monthPct = monthlyTarget > 0 ? (monthTotal / monthlyTarget) * 100 : null;
-  const quarterPct = monthlyTarget > 0 ? (quarterTotal / (monthlyTarget * 3)) * 100 : null;
-  const yearPct = monthlyTarget > 0 ? (yearTotal / (monthlyTarget * 12)) * 100 : null;
+  useEffect(() => {
+    if (!summary?.hasData || todayRowsDate === summary.latestDate) return;
+    let cancelled = false;
+    (async () => {
+      const rows = await apiGet(`/api/daily/${summary.latestDate}`);
+      if (cancelled || !rows) return;
+      setTodayRows(rows.map((r) => {
+        const mm = masterByCode[normCode(r.code)];
+        const netBrok = r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok;
+        return { ...r, netBrok, dealer: mm && mm.dealer ? mm.dealer : UNMAPPED, rm: mm ? mm.rm : "" };
+      }));
+      setTodayRowsDate(summary.latestDate);
+    })();
+    return () => { cancelled = true; };
+  }, [summary, masterByCode, kotakShare, todayRowsDate]);
 
-  const activeRecs = allRecords.filter((r) => inPeriod(r, period));
-  // Dealer-wise figures show each dealer's Net share (after the RM split), not
-  // the undivided Total — see DealersTab for the Total/Net breakdown.
-  const dealerMap = {};
-  activeRecs.forEach((r) => {
-    const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
-    dealerMap[r.dealer] = (dealerMap[r.dealer] || 0) + (r.netBrok * dealerPct) / 100;
-  });
-  const dealerRows = Object.entries(dealerMap).map(([dealer, val]) => ({ dealer, value: Math.round(val) })).sort((a, b) => b.value - a.value);
-
-  const clientMap = {};
-  activeRecs.forEach((r) => { if (!clientMap[r.code]) clientMap[r.code] = { code: r.code, name: r.name, value: 0 }; clientMap[r.code].value += r.netBrok; });
-  const topClients = Object.values(clientMap).sort((a, b) => b.value - a.value).slice(0, 10);
-
-  const byDate = {};
-  allRecords.forEach((r) => {
-    const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
-    byDate[r.date] = (byDate[r.date] || 0) + (isAdmin ? r.netBrok : (r.netBrok * dealerPct) / 100);
-  });
-  const trend = dailyDates.slice(-30).map((d) => ({ date: parseISO(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }), value: Math.round(byDate[d] || 0) }));
-
-  const unmapped = dealerRows.find((d) => d.dealer === UNMAPPED);
-
-  const latestIdx = dailyDates.indexOf(latestDate);
-  const prevDate = latestIdx > 0 ? dailyDates[latestIdx - 1] : null;
-  const prevTotal = prevDate ? netSum(allRecords.filter((r) => r.date === prevDate)) : null;
-
-  const todayRecs = allRecords.filter((r) => r.date === latestDate);
+  // useSort (and everything it depends on) must run on every render, so it's
+  // computed before the early returns below — conditionally skipping a hook
+  // call between renders breaks React's Rules of Hooks.
+  const todayRecs = todayRows || [];
   const todayFiltered = todayRecs.filter((r) => {
     if (!todaySearch) return true;
     const s = todaySearch.toLowerCase();
@@ -939,20 +923,48 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
   const { sorted: todaySorted, sortKey: todaySortKey, sortDir: todaySortDir, toggle: todayToggle } = useSort(todayFiltered, "netBrok", "desc");
   const todayGrandTotal = todayRecs.reduce((s, r) => s + r.netBrok, 0);
 
+  if (summary === null) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        <TasksSummaryCard isAdmin={isAdmin} />
+        <Card style={{ padding: 50, textAlign: "center", color: INK_SOFT, fontSize: 13.5 }}>Loading dashboard…</Card>
+      </div>
+    );
+  }
+  if (!summary.hasData) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        <TasksSummaryCard isAdmin={isAdmin} />
+        <EmptyState icon={UploadCloud} title="No data uploaded yet" text="Head to Upload to add your first day's brokerage report — the dashboard fills in automatically." />
+      </div>
+    );
+  }
+
+  const { latestDate, prevDate, kpi, dealerRows, topClients, trend } = summary;
+  const latestD = parseISO(latestDate);
+  const y = latestD.getFullYear(), m = latestD.getMonth(), q = quarterOf(latestD);
+
+  const monthlyTarget = kpi.monthlyTarget || 0;
+  const monthPct = monthlyTarget > 0 ? (kpi.mtd / monthlyTarget) * 100 : null;
+  const quarterPct = monthlyTarget > 0 ? (kpi.qtd / (monthlyTarget * 3)) * 100 : null;
+  const yearPct = monthlyTarget > 0 ? (kpi.ytd / (monthlyTarget * 12)) * 100 : null;
+
+  const unmapped = dealerRows.find((d) => d.dealer === UNMAPPED);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
-        <KPI label="Today" value={fmtINR(dayTotal)} sub={latestD.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })} tone="blue" icon={Calendar} />
+        <KPI label="Today" value={fmtINR(kpi.today)} sub={latestD.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })} tone="blue" icon={Calendar} />
         <KPI
           label="Yesterday (T-1)"
-          value={prevDate ? fmtINR(prevTotal) : "—"}
+          value={prevDate ? fmtINR(kpi.yesterday) : "—"}
           sub={prevDate ? parseISO(prevDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "No prior upload yet"}
           tone="ink"
           icon={Calendar}
         />
-        <KPI label={`${MONTH_NAMES[m]} MTD`} value={fmtINR(monthTotal)} sub={monthPct !== null ? `${monthPct.toFixed(0)}% of ${fmtINR(monthlyTarget)} target` : "Set a target in the Targets tab"} tone={monthPct === null ? "violet" : monthPct >= 100 ? "emerald" : monthPct >= 60 ? "gold" : "red"} icon={TrendingUp} />
-        <KPI label={`Q${q} QTD`} value={fmtINR(quarterTotal)} sub={quarterPct !== null ? `${quarterPct.toFixed(0)}% of implied target` : "—"} tone={quarterPct === null ? "violet" : quarterPct >= 100 ? "emerald" : quarterPct >= 60 ? "gold" : "red"} icon={TrendingUp} />
-        <KPI label={`${y} YTD`} value={fmtINR(yearTotal)} sub={yearPct !== null ? `${yearPct.toFixed(0)}% of implied target` : "—"} tone={yearPct === null ? "violet" : yearPct >= 100 ? "emerald" : yearPct >= 60 ? "gold" : "red"} icon={Building2} />
+        <KPI label={`${MONTH_NAMES[m]} MTD`} value={fmtINR(kpi.mtd)} sub={monthPct !== null ? `${monthPct.toFixed(0)}% of ${fmtINR(monthlyTarget)} target` : "Set a target in the Targets tab"} tone={monthPct === null ? "violet" : monthPct >= 100 ? "emerald" : monthPct >= 60 ? "gold" : "red"} icon={TrendingUp} />
+        <KPI label={`Q${q} QTD`} value={fmtINR(kpi.qtd)} sub={quarterPct !== null ? `${quarterPct.toFixed(0)}% of implied target` : "—"} tone={quarterPct === null ? "violet" : quarterPct >= 100 ? "emerald" : quarterPct >= 60 ? "gold" : "red"} icon={TrendingUp} />
+        <KPI label={`${y} YTD`} value={fmtINR(kpi.ytd)} sub={yearPct !== null ? `${yearPct.toFixed(0)}% of implied target` : "—"} tone={yearPct === null ? "violet" : yearPct >= 100 ? "emerald" : yearPct >= 60 ? "gold" : "red"} icon={Building2} />
       </div>
 
       <TasksSummaryCard isAdmin={isAdmin} />
@@ -992,7 +1004,8 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
                   <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.netBrok)}</td>
                 </tr>
               ))}
-              {todaySorted.length === 0 && <tr><td colSpan={5} style={{ color: INK_SOFT, textAlign: "center", padding: 16 }}>No matching rows.</td></tr>}
+              {todayRows === null && <tr><td colSpan={5} style={{ color: INK_SOFT, textAlign: "center", padding: 16 }}>Loading…</td></tr>}
+              {todayRows !== null && todaySorted.length === 0 && <tr><td colSpan={5} style={{ color: INK_SOFT, textAlign: "center", padding: 16 }}>No matching rows.</td></tr>}
             </tbody>
             {todaySorted.length > 0 && (
               <tfoot>
@@ -1017,7 +1030,7 @@ function Dashboard({ allRecords, dailyDates, latestDate, targets, isAdmin }) {
       <Card style={{ padding: 18 }}>
         <SectionTitle>Daily net brokerage — last 30 uploaded days</SectionTitle>
         <ResponsiveContainer width="100%" height={230}>
-          <LineChart data={trend} margin={{ top: 8, right: 12, left: -14, bottom: 0 }}>
+          <LineChart data={trend.map((t) => ({ date: parseISO(t.date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }), value: t.value }))} margin={{ top: 8, right: 12, left: -14, bottom: 0 }}>
             <CartesianGrid stroke={LINE} vertical={false} />
             <XAxis dataKey="date" tick={{ fontSize: 11, fill: INK_SOFT }} axisLine={{ stroke: LINE }} tickLine={false} />
             <YAxis tickFormatter={fmtINR} tick={{ fontSize: 11, fill: INK_SOFT }} axisLine={false} tickLine={false} width={60} />
@@ -1139,32 +1152,44 @@ function ClientTransactionsModal({ code, name, records, onClose }) {
   );
 }
 
-function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, rmNames, isAdmin, onSave, showToast, onWipe }) {
+function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, isAdmin, onSave, showToast, onWipe }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("all");
   const [selectedClient, setSelectedClient] = useState(null);
+  const [selectedClientRecords, setSelectedClientRecords] = useState([]);
   const [editingCode, setEditingCode] = useState(null);
   const [editDraft, setEditDraft] = useState({});
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ code: "", name: "", dealer: "", rm: "", branch: "" });
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkPending, setBulkPending] = useState(null);
+  const [brokerageByCode, setBrokerageByCode] = useState({});
   const bulkFileRef = useRef(null);
+  const kotakShare = (targets.kotakSharePct ?? 85) / 100;
 
-  const now = new Date();
-  const brokerageByCode = useMemo(() => {
-    const map = {};
-    const y = now.getFullYear(), m = now.getMonth(), q = quarterOf(now);
-    allRecords.forEach((r) => {
-      const d = parseISO(r.date);
-      const match = period === "all" ? true
-        : period === "month" ? (d.getFullYear() === y && d.getMonth() === m)
-        : period === "quarter" ? (d.getFullYear() === y && quarterOf(d) === q)
-        : (d.getFullYear() === y);
-      if (match) map[normCode(r.code)] = (map[normCode(r.code)] || 0) + r.netBrok;
-    });
-    return map;
-  }, [allRecords, period]);
+  // Same per-client aggregate the Dealers tab uses (bounded by client count,
+  // not by transaction volume) — fetched here instead of reducing over every
+  // DailyRecord the app has ever seen.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await apiGet(`/api/brokerage/by-client?period=${period}`);
+      if (cancelled || !res) return;
+      setBrokerageByCode(Object.fromEntries((res.rows || []).map((r) => [r.code, r.value])));
+    })();
+    return () => { cancelled = true; };
+  }, [period]);
+
+  useEffect(() => {
+    if (!selectedClient) { setSelectedClientRecords([]); return; }
+    let cancelled = false;
+    (async () => {
+      const rows = await apiGet(`/api/daily/client/${encodeURIComponent(selectedClient.code)}`);
+      if (cancelled || !rows) return;
+      setSelectedClientRecords(rows.map((r) => ({ ...r, netBrok: r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok })));
+    })();
+    return () => { cancelled = true; };
+  }, [selectedClient, kotakShare]);
 
   const rows = useMemo(() => master.map((m) => ({
     ...m,
@@ -1393,7 +1418,7 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, rmName
         <ClientTransactionsModal
           code={selectedClient.code}
           name={selectedClient.name}
-          records={allRecords.filter((r) => normCode(r.code) === normCode(selectedClient.code))}
+          records={selectedClientRecords}
           onClose={() => setSelectedClient(null)}
         />
       )}
@@ -1401,17 +1426,44 @@ function ClientsTab({ master, allRecords, latestDebitByCode, dealerNames, rmName
   );
 }
 
-function DealersTab({ master, dealerNames, allRecords, targets, latestDebitByCode, isAdmin, onRename, onRemove, onAdd, onAddBulk, onSaveTargets, onWipe, showToast }) {
+function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, onRename, onRemove, onAdd, onAddBulk, onSaveTargets, onWipe, showToast }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("all");
   const [selectedClient, setSelectedClient] = useState(null);
+  const [selectedClientRecords, setSelectedClientRecords] = useState([]);
   const [newDealer, setNewDealer] = useState("");
   const [editing, setEditing] = useState(null);
   const [editName, setEditName] = useState("");
   const [targetDrafts, setTargetDrafts] = useState({});
   const [bulkOpen, setBulkOpen] = useState(false);
+  const [brokerageByClient, setBrokerageByClient] = useState({});
   const inputRef = useRef(null);
   const bulkFileRef = useRef(null);
+  const kotakShare = (targets.kotakSharePct ?? 85) / 100;
+
+  // The one aggregate everything below (dealer totals, the split table, the
+  // per-dealer export) reduces through — fetched per period instead of
+  // reducing over every DailyRecord the app has ever seen.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await apiGet(`/api/brokerage/by-client?period=${period}`);
+      if (cancelled || !res) return;
+      setBrokerageByClient(Object.fromEntries((res.rows || []).map((r) => [r.code, r.value])));
+    })();
+    return () => { cancelled = true; };
+  }, [period]);
+
+  useEffect(() => {
+    if (!selectedClient) { setSelectedClientRecords([]); return; }
+    let cancelled = false;
+    (async () => {
+      const rows = await apiGet(`/api/daily/client/${encodeURIComponent(selectedClient.code)}`);
+      if (cancelled || !rows) return;
+      setSelectedClientRecords(rows.map((r) => ({ ...r, netBrok: r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok })));
+    })();
+    return () => { cancelled = true; };
+  }, [selectedClient, kotakShare]);
 
   const submitNewDealer = () => { onAdd(newDealer.trim()); setNewDealer(""); };
 
@@ -1430,40 +1482,33 @@ function DealersTab({ master, dealerNames, allRecords, targets, latestDebitByCod
     setBulkOpen(false);
   };
 
-  const now = new Date();
-  const y = now.getFullYear(), m = now.getMonth(), q = quarterOf(now);
   const rmSplitPct = targets.rmSplitPct ?? 50;
   // Total = undivided brokerage attributed to the dealer (unchanged, drives the
   // monthly target progress bar). Net = the dealer's own share after subtracting
   // whatever the mapped RM takes per splitShares() — the same split used in the
-  // RM/Dealer split table below.
+  // RM/Dealer split table below. Both are grouped from brokerageByClient (fetched
+  // above, already period-filtered) via master — sum is associative, so grouping
+  // per-client totals by dealer gives the identical result to summing every raw
+  // record by dealer, at a fraction of the data volume.
   const brokerageByDealer = useMemo(() => {
     const map = {};
-    allRecords.forEach((r) => {
-      const d = parseISO(r.date);
-      const match = period === "all" ? true
-        : period === "month" ? (d.getFullYear() === y && d.getMonth() === m)
-        : period === "quarter" ? (d.getFullYear() === y && quarterOf(d) === q)
-        : (d.getFullYear() === y);
-      if (match) map[r.dealer] = (map[r.dealer] || 0) + r.netBrok;
+    master.forEach((mm) => {
+      if (!mm.dealer) return;
+      map[mm.dealer] = (map[mm.dealer] || 0) + (brokerageByClient[normCode(mm.code)] || 0);
     });
     return map;
-  }, [allRecords, period]);
+  }, [master, brokerageByClient]);
 
   const netBrokerageByDealer = useMemo(() => {
     const map = {};
-    allRecords.forEach((r) => {
-      const d = parseISO(r.date);
-      const match = period === "all" ? true
-        : period === "month" ? (d.getFullYear() === y && d.getMonth() === m)
-        : period === "quarter" ? (d.getFullYear() === y && quarterOf(d) === q)
-        : (d.getFullYear() === y);
-      if (!match) return;
-      const { dealerPct } = splitShares(r.dealer, r.rm, rmSplitPct);
-      map[r.dealer] = (map[r.dealer] || 0) + (r.netBrok * dealerPct) / 100;
+    master.forEach((mm) => {
+      if (!mm.dealer) return;
+      const brokerage = brokerageByClient[normCode(mm.code)] || 0;
+      const { dealerPct } = splitShares(mm.dealer, mm.rm, rmSplitPct);
+      map[mm.dealer] = (map[mm.dealer] || 0) + (brokerage * dealerPct) / 100;
     });
     return map;
-  }, [allRecords, period, rmSplitPct]);
+  }, [master, brokerageByClient, rmSplitPct]);
 
   const clientCount = useMemo(() => {
     const c = {};
@@ -1481,19 +1526,6 @@ function DealersTab({ master, dealerNames, allRecords, targets, latestDebitByCod
   };
 
   const [splitSearch, setSplitSearch] = useState("");
-
-  const brokerageByClient = useMemo(() => {
-    const map = {};
-    allRecords.forEach((r) => {
-      const d = parseISO(r.date);
-      const match = period === "all" ? true
-        : period === "month" ? (d.getFullYear() === y && d.getMonth() === m)
-        : period === "quarter" ? (d.getFullYear() === y && quarterOf(d) === q)
-        : (d.getFullYear() === y);
-      if (match) { const key = normCode(r.code); map[key] = (map[key] || 0) + r.netBrok; }
-    });
-    return map;
-  }, [allRecords, period]);
 
   // Exports every client mapped to one dealer as an .xlsx, honoring the
   // currently selected period so the file matches what's on screen.
@@ -1711,7 +1743,7 @@ function DealersTab({ master, dealerNames, allRecords, targets, latestDebitByCod
         <ClientTransactionsModal
           code={selectedClient.code}
           name={selectedClient.name}
-          records={allRecords.filter((r) => normCode(r.code) === normCode(selectedClient.code))}
+          records={selectedClientRecords}
           onClose={() => setSelectedClient(null)}
         />
       )}
@@ -1719,9 +1751,10 @@ function DealersTab({ master, dealerNames, allRecords, targets, latestDebitByCod
   );
 }
 
-function RmsTab({ master, rmNames, allRecords, targets, isAdmin, onRename, onRemove, onAdd, onAddBulk, onWipe, showToast }) {
+function RmsTab({ master, rmNames, isAdmin, onRename, onRemove, onAdd, onAddBulk, onWipe, showToast }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("all");
+  const [netBrokerageByRm, setNetBrokerageByRm] = useState({});
   const [newRm, setNewRm] = useState("");
   const [editing, setEditing] = useState(null);
   const [editName, setEditName] = useState("");
@@ -1746,30 +1779,19 @@ function RmsTab({ master, rmNames, allRecords, targets, isAdmin, onRename, onRem
     setBulkOpen(false);
   };
 
-  const now = new Date();
-  const y = now.getFullYear(), m = now.getMonth(), q = quarterOf(now);
-  const rmSplitPct = targets.rmSplitPct ?? 50;
-
   // Each RM's Net Brokerage is their share of every client mapped to them,
-  // via the same splitShares() used in the Dealers tab's split table.
-  const netBrokerageByRm = useMemo(() => {
-    const map = {};
-    const masterByCode = {};
-    master.forEach((mm) => { masterByCode[normCode(mm.code)] = mm; });
-    allRecords.forEach((r) => {
-      const mm = masterByCode[normCode(r.code)];
-      if (!mm || !mm.rm) return;
-      const d = parseISO(r.date);
-      const match = period === "all" ? true
-        : period === "month" ? (d.getFullYear() === y && d.getMonth() === m)
-        : period === "quarter" ? (d.getFullYear() === y && quarterOf(d) === q)
-        : (d.getFullYear() === y);
-      if (!match) return;
-      const { rmPct } = splitShares(mm.dealer, mm.rm, rmSplitPct);
-      map[mm.rm] = (map[mm.rm] || 0) + (r.netBrok * rmPct) / 100;
-    });
-    return map;
-  }, [master, allRecords, period, rmSplitPct, y, m, q]);
+  // via the same splitShares() math as the Dealers tab's split table —
+  // computed server-side in Postgres instead of reducing over every
+  // DailyRecord the app has ever seen.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await apiGet(`/api/rms/summary?period=${period}`);
+      if (cancelled || !res) return;
+      setNetBrokerageByRm(Object.fromEntries((res.rows || []).map((r) => [r.rm, r.netBrokerage])));
+    })();
+    return () => { cancelled = true; };
+  }, [period]);
 
   const clientCount = useMemo(() => {
     const c = {};

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "../../../../lib/prisma";
-import { requireAdmin } from "../../../../lib/apiAuth";
+import { requireSession, requireAdmin } from "../../../../lib/apiAuth";
 import { writeAudit } from "../../../../lib/audit";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -10,6 +10,34 @@ const recordSchema = z.object({
   name: z.string().trim().max(200).default(""),
   debit: z.number().finite(),
 });
+// Matches the normCode() convention used client-side (Dashboard.jsx) for
+// joining MasterClient <-> DebitRecord by code.
+const normCode = (c) => String(c || "").trim().toUpperCase().replace(/\s+/g, "");
+
+// Scoped to one date — the bounded alternative to /api/debit's full-table fetch.
+export async function GET(req, { params }) {
+  const { session, response } = await requireSession();
+  if (response) return response;
+
+  const date = params.date;
+  if (!ISO_DATE.test(date)) {
+    return NextResponse.json({ error: "Invalid date" }, { status: 400 });
+  }
+
+  const rows = await prisma.debitRecord.findMany({
+    where: { date },
+    select: { code: true, name: true, debit: true },
+  });
+
+  if (session.user.role === "ADMIN") return NextResponse.json(rows);
+
+  const clients = await prisma.masterClient.findMany({
+    where: { dealer: { equals: session.user.name, mode: "insensitive" } },
+    select: { code: true },
+  });
+  const allowedCodes = new Set(clients.map((c) => normCode(c.code)));
+  return NextResponse.json(rows.filter((r) => allowedCodes.has(normCode(r.code))));
+}
 
 export async function PUT(req, { params }) {
   const { session, response } = await requireAdmin();

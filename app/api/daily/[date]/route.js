@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "../../../../lib/prisma";
-import { requireAdmin } from "../../../../lib/apiAuth";
+import { requireSession, requireAdmin } from "../../../../lib/apiAuth";
 import { writeAudit } from "../../../../lib/audit";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -11,6 +11,36 @@ const recordSchema = z.object({
   netBrok: z.number().finite(),
   source: z.enum(["SW", "KOTAK", ""]).default(""),
 });
+// Matches the normCode() convention used client-side (Dashboard.jsx) for
+// joining MasterClient <-> DailyRecord by code.
+const normCode = (c) => String(c || "").trim().toUpperCase().replace(/\s+/g, "");
+
+// Scoped to one date (+ optional ?source=) — the bounded alternative to
+// /api/daily's full-table fetch, for Upload's preview and Missing Finder.
+export async function GET(req, { params }) {
+  const { session, response } = await requireSession();
+  if (response) return response;
+
+  const date = params.date;
+  if (!ISO_DATE.test(date)) {
+    return NextResponse.json({ error: "Invalid date" }, { status: 400 });
+  }
+
+  const source = new URL(req.url).searchParams.get("source") || undefined;
+  const rows = await prisma.dailyRecord.findMany({
+    where: { date, ...(source ? { source } : {}) },
+    select: { code: true, name: true, netBrok: true, source: true },
+  });
+
+  if (session.user.role === "ADMIN") return NextResponse.json(rows);
+
+  const clients = await prisma.masterClient.findMany({
+    where: { dealer: { equals: session.user.name, mode: "insensitive" } },
+    select: { code: true },
+  });
+  const allowedCodes = new Set(clients.map((c) => normCode(c.code)));
+  return NextResponse.json(rows.filter((r) => allowedCodes.has(normCode(r.code))));
+}
 
 export async function PUT(req, { params }) {
   const { session, response } = await requireAdmin();

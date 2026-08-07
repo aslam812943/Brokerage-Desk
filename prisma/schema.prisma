@@ -28,6 +28,10 @@ model MasterClient {
   dealer    String   @default("")
   branch    String   @default("")
   updatedAt DateTime @updatedAt
+  // Generated column (see migration SQL) mirroring the normCode() convention
+  // used client-side in Dashboard.jsx — lets SQL join DailyRecord <-> MasterClient
+  // by code without depending on upload-to-upload casing/whitespace drift.
+  codeNorm  String?  @unique
 }
 
 model Dealer {
@@ -41,15 +45,21 @@ model Rm {
 }
 
 model DailyRecord {
-  id       String @id @default(cuid())
+  id       String  @id @default(cuid())
   date     String
   code     String
-  name     String @default("")
-  netBrok  Float  @default(0)
-  source   String @default("")
+  name     String  @default("")
+  netBrok  Float   @default(0)
+  source   String  @default("")
+  // Generated column (see migration SQL) — see MasterClient.codeNorm.
+  codeNorm String?
 
   @@index([date])
   @@index([code])
+  // Every per-date lookup (Upload preview, Missing Finder diff, the
+  // duplicate-source guard) filters by date AND source together.
+  @@index([date, source])
+  @@index([codeNorm])
 }
 
 model DebitRecord {
@@ -61,6 +71,8 @@ model DebitRecord {
 
   @@index([date])
   @@index([code])
+  // Backs "latest debit per client" (DISTINCT ON (code) ... ORDER BY code, date DESC).
+  @@index([code, date])
 }
 
 model Targets {
