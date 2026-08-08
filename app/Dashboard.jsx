@@ -115,6 +115,21 @@ async function apiGet(url) {
   if (!res.ok) return null;
   return res.json();
 }
+// Per-tab-switch aggregate reads (dashboard summary, brokerage-by-client,
+// RM summary) are cheap in Postgres but every tab component fetches on
+// mount, so unmounting/remounting on every nav click paid the network round
+// trip again each time. Cached here by URL so a remount reads instantly;
+// cleared by invalidateReadCache() whenever an action mutates the
+// underlying DailyRecord/MasterClient/Targets data these reads are built
+// from, so a stale figure is never shown after an edit.
+const _readCache = new Map();
+async function apiGetCached(url) {
+  if (_readCache.has(url)) return _readCache.get(url);
+  const data = await apiGet(url);
+  if (data != null) _readCache.set(url, data);
+  return data;
+}
+function invalidateReadCache() { _readCache.clear(); }
 async function apiPut(url, body) {
   const res = await fetch(url, {
     method: "PUT",
@@ -371,16 +386,6 @@ function useSort(rows, defaultKey, defaultDir = "desc") {
 
 export default function App() {
   const [tab, setTab] = useState("dashboard");
-  // Tabs stay mounted (hidden via CSS) once visited instead of being torn
-  // down on every switch — each tab component fetches its own data on
-  // mount, so unmounting/remounting on every nav click re-fetched it every
-  // single time you came back. Visiting a tab for the first time is still
-  // lazy; returning to one you've already opened is instant, no refetch.
-  const [visitedTabs, setVisitedTabs] = useState({ dashboard: true });
-  const goToTab = (id) => {
-    setTab(id);
-    setVisitedTabs((v) => (v[id] ? v : { ...v, [id]: true }));
-  };
   const [loading, setLoading] = useState(true);
   const [master, setMaster] = useState([]);
   const [dealerRegistry, setDealerRegistry] = useState([]);
@@ -482,6 +487,7 @@ export default function App() {
   // A save only replaces rows from the same source (SW or Kotak) for that date —
   // the other source's rows, if any, are kept so both reports coexist.
   const saveDaily = async (isoD, records) => {
+    invalidateReadCache();
     const src = records[0]?.source || "";
     const total = records.reduce((s, r) => s + (r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok), 0);
     setDailyData((p) => {
@@ -496,6 +502,7 @@ export default function App() {
   };
   // `source` scopes the delete to just that source's rows; omit it to remove the whole date.
   const deleteDaily = async (isoD, source) => {
+    invalidateReadCache();
     const scoped = source !== undefined;
     const remaining = scoped ? (dailyData[isoD] || []).filter((r) => (r.source || "") !== source) : [];
     setDailyData((p) => {
@@ -521,10 +528,10 @@ export default function App() {
     showToast(`Removed debit report ${isoD}`, "gold");
     storageDelete(`debit:${isoD}`);
   };
-  const saveMaster = async (records) => { setMaster(records); storageSet("master-clients", records); };
+  const saveMaster = async (records) => { invalidateReadCache(); setMaster(records); storageSet("master-clients", records); };
   const saveDealerRegistry = async (list) => { setDealerRegistry(list); storageSet("dealers-list", list); };
   const saveRmRegistry = async (list) => { setRmRegistry(list); storageSet("rms-list", list); };
-  const saveTargets = async (t) => { setTargets(t); storageSet("targets", t); };
+  const saveTargets = async (t) => { invalidateReadCache(); setTargets(t); storageSet("targets", t); };
 
   const renameDealer = async (oldName, newName) => {
     newName = canonicalDealer(dealerNames.filter((d) => d !== oldName), newName);
@@ -712,7 +719,7 @@ export default function App() {
         <div className="dt-header-right" style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <div className="dt-nav" style={{ display: "flex", gap: 6, background: "rgba(255,255,255,0.06)", padding: 5, borderRadius: 12, flexWrap: "wrap" }}>
             {visibleNav.map((n) => (
-              <button key={n.id} onClick={() => goToTab(n.id)} style={{
+              <button key={n.id} onClick={() => setTab(n.id)} style={{
                 display: "flex", alignItems: "center", gap: 7, padding: "8px 14px", borderRadius: 8, border: "none", cursor: "pointer",
                 fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", transition: "all .15s",
                 background: tab === n.id ? n.color : "transparent", color: tab === n.id ? "#fff" : "#C4CCDB",
@@ -726,68 +733,42 @@ export default function App() {
       </div>
 
       <div className="dt-content" style={{ padding: 22 }}>
-        {visitedTabs.dashboard && (
-          <div style={{ display: tab === "dashboard" ? "block" : "none" }}>
-            <Dashboard master={master} targets={targets} isAdmin={isAdmin} />
-          </div>
+        {tab === "dashboard" && <Dashboard master={master} targets={targets} isAdmin={isAdmin} />}
+        {tab === "clients" && (
+          <ClientsTab
+            master={master} targets={targets} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
+            isAdmin={isAdmin} onSave={saveMaster} showToast={showToast} onWipe={wipeClients}
+          />
         )}
-        {visitedTabs.clients && (
-          <div style={{ display: tab === "clients" ? "block" : "none" }}>
-            <ClientsTab
-              master={master} targets={targets} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
-              isAdmin={isAdmin} onSave={saveMaster} showToast={showToast} onWipe={wipeClients}
-            />
-          </div>
+        {tab === "dealers" && (
+          <DealersTab
+            master={master} dealerNames={dealerNames} targets={targets} latestDebitByCode={latestDebitByCode}
+            isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk} onSaveTargets={saveTargets}
+            onWipe={wipeDealers} showToast={showToast}
+          />
         )}
-        {visitedTabs.dealers && (
-          <div style={{ display: tab === "dealers" ? "block" : "none" }}>
-            <DealersTab
-              master={master} dealerNames={dealerNames} targets={targets} latestDebitByCode={latestDebitByCode}
-              isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk} onSaveTargets={saveTargets}
-              onWipe={wipeDealers} showToast={showToast}
-            />
-          </div>
+        {tab === "rms" && (
+          <RmsTab
+            master={master} rmNames={rmNames}
+            isAdmin={isAdmin} onRename={renameRm} onRemove={removeRm} onAdd={addRm} onAddBulk={addRmsBulk}
+            onWipe={wipeRms} showToast={showToast}
+          />
         )}
-        {visitedTabs.rms && (
-          <div style={{ display: tab === "rms" ? "block" : "none" }}>
-            <RmsTab
-              master={master} rmNames={rmNames}
-              isAdmin={isAdmin} onRename={renameRm} onRemove={removeRm} onAdd={addRm} onAddBulk={addRmsBulk}
-              onWipe={wipeRms} showToast={showToast}
-            />
-          </div>
-        )}
-        {visitedTabs.upload && isAdmin && (
-          <div style={{ display: tab === "upload" ? "block" : "none" }}>
-            {historyLoaded ? (
-              <UploadTab
-                dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData} masterByCode={masterByCode}
-                onSaveDaily={saveDaily} onDeleteDaily={deleteDaily} onSaveDebit={saveDebit} onDeleteDebit={deleteDebit} showToast={showToast}
-                kotakSharePct={targets.kotakSharePct ?? 85}
-              />
-            ) : <HistoryLoadingPane />}
-          </div>
-        )}
-        {visitedTabs.missingfinder && isAdmin && (
-          <div style={{ display: tab === "missingfinder" ? "block" : "none" }}>
-            {historyLoaded ? (
-              <MissingFinderTab
-                master={master} dailyDates={dailyDates} dailyData={dailyData}
-                onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
-              />
-            ) : <HistoryLoadingPane />}
-          </div>
-        )}
-        {visitedTabs.targets && isAdmin && (
-          <div style={{ display: tab === "targets" ? "block" : "none" }}>
-            <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />
-          </div>
-        )}
-        {visitedTabs.tasks && (
-          <div style={{ display: tab === "tasks" ? "block" : "none" }}>
-            <TasksTab isAdmin={isAdmin} showToast={showToast} />
-          </div>
-        )}
+        {tab === "upload" && isAdmin && (historyLoaded ? (
+          <UploadTab
+            dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData} masterByCode={masterByCode}
+            onSaveDaily={saveDaily} onDeleteDaily={deleteDaily} onSaveDebit={saveDebit} onDeleteDebit={deleteDebit} showToast={showToast}
+            kotakSharePct={targets.kotakSharePct ?? 85}
+          />
+        ) : <HistoryLoadingPane />)}
+        {tab === "missingfinder" && isAdmin && (historyLoaded ? (
+          <MissingFinderTab
+            master={master} dailyDates={dailyDates} dailyData={dailyData}
+            onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
+          />
+        ) : <HistoryLoadingPane />)}
+        {tab === "targets" && isAdmin && <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
+        {tab === "tasks" && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
       </div>
 
       {toast && (
@@ -922,7 +903,7 @@ function Dashboard({ master, targets, isAdmin }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const s = await apiGet(`/api/dashboard/summary?period=${period}`);
+      const s = await apiGetCached(`/api/dashboard/summary?period=${period}`);
       if (!cancelled) setSummary(s);
     })();
     return () => { cancelled = true; };
@@ -935,7 +916,7 @@ function Dashboard({ master, targets, isAdmin }) {
     if (!summary?.hasData || todayRowsDate === summary.latestDate) return;
     let cancelled = false;
     (async () => {
-      const rows = await apiGet(`/api/daily/${summary.latestDate}`);
+      const rows = await apiGetCached(`/api/daily/${summary.latestDate}`);
       if (cancelled || !rows) return;
       setTodayRows(rows.map((r) => {
         const mm = masterByCode[normCode(r.code)];
@@ -1209,7 +1190,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await apiGet(`/api/brokerage/by-client?period=${period}`);
+      const res = await apiGetCached(`/api/brokerage/by-client?period=${period}`);
       if (cancelled || !res) return;
       setBrokerageByCode(Object.fromEntries((res.rows || []).map((r) => [r.code, r.value])));
     })();
@@ -1483,7 +1464,7 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await apiGet(`/api/brokerage/by-client?period=${period}`);
+      const res = await apiGetCached(`/api/brokerage/by-client?period=${period}`);
       if (cancelled || !res) return;
       setBrokerageByClient(Object.fromEntries((res.rows || []).map((r) => [r.code, r.value])));
     })();
@@ -1822,7 +1803,7 @@ function RmsTab({ master, rmNames, isAdmin, onRename, onRemove, onAdd, onAddBulk
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await apiGet(`/api/rms/summary?period=${period}`);
+      const res = await apiGetCached(`/api/rms/summary?period=${period}`);
       if (cancelled || !res) return;
       setNetBrokerageByRm(Object.fromEntries((res.rows || []).map((r) => [r.rm, r.netBrokerage])));
     })();
