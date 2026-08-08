@@ -695,7 +695,7 @@ export default function App() {
             <IndianRupee size={19} color="#fff" />
           </div>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: "#fff" }}>Sharewealth Brokerage Desk</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: "#fff" }}>Sharewealth</div>
             <div style={{ fontSize: 12, color: "#A6B0C3" }}>{latestDate ? `Data through ${parseISO(latestDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}` : "No data uploaded yet"}</div>
           </div>
         </div>

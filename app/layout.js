@@ -1,7 +1,7 @@
 import Providers from "./providers";
 
 export const metadata = {
-  title: "Sharewealth Brokerage Desk",
+  title: "Sharewealth",
   description: "Internal brokerage dashboard",
 };
 
