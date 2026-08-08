@@ -371,6 +371,16 @@ function useSort(rows, defaultKey, defaultDir = "desc") {
 
 export default function App() {
   const [tab, setTab] = useState("dashboard");
+  // Tabs stay mounted (hidden via CSS) once visited instead of being torn
+  // down on every switch — each tab component fetches its own data on
+  // mount, so unmounting/remounting on every nav click re-fetched it every
+  // single time you came back. Visiting a tab for the first time is still
+  // lazy; returning to one you've already opened is instant, no refetch.
+  const [visitedTabs, setVisitedTabs] = useState({ dashboard: true });
+  const goToTab = (id) => {
+    setTab(id);
+    setVisitedTabs((v) => (v[id] ? v : { ...v, [id]: true }));
+  };
   const [loading, setLoading] = useState(true);
   const [master, setMaster] = useState([]);
   const [dealerRegistry, setDealerRegistry] = useState([]);
@@ -702,7 +712,7 @@ export default function App() {
         <div className="dt-header-right" style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
           <div className="dt-nav" style={{ display: "flex", gap: 6, background: "rgba(255,255,255,0.06)", padding: 5, borderRadius: 12, flexWrap: "wrap" }}>
             {visibleNav.map((n) => (
-              <button key={n.id} onClick={() => setTab(n.id)} style={{
+              <button key={n.id} onClick={() => goToTab(n.id)} style={{
                 display: "flex", alignItems: "center", gap: 7, padding: "8px 14px", borderRadius: 8, border: "none", cursor: "pointer",
                 fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", transition: "all .15s",
                 background: tab === n.id ? n.color : "transparent", color: tab === n.id ? "#fff" : "#C4CCDB",
@@ -716,42 +726,68 @@ export default function App() {
       </div>
 
       <div className="dt-content" style={{ padding: 22 }}>
-        {tab === "dashboard" && <Dashboard master={master} targets={targets} isAdmin={isAdmin} />}
-        {tab === "clients" && (
-          <ClientsTab
-            master={master} targets={targets} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
-            isAdmin={isAdmin} onSave={saveMaster} showToast={showToast} onWipe={wipeClients}
-          />
+        {visitedTabs.dashboard && (
+          <div style={{ display: tab === "dashboard" ? "block" : "none" }}>
+            <Dashboard master={master} targets={targets} isAdmin={isAdmin} />
+          </div>
         )}
-        {tab === "dealers" && (
-          <DealersTab
-            master={master} dealerNames={dealerNames} targets={targets} latestDebitByCode={latestDebitByCode}
-            isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk} onSaveTargets={saveTargets}
-            onWipe={wipeDealers} showToast={showToast}
-          />
+        {visitedTabs.clients && (
+          <div style={{ display: tab === "clients" ? "block" : "none" }}>
+            <ClientsTab
+              master={master} targets={targets} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
+              isAdmin={isAdmin} onSave={saveMaster} showToast={showToast} onWipe={wipeClients}
+            />
+          </div>
         )}
-        {tab === "rms" && (
-          <RmsTab
-            master={master} rmNames={rmNames}
-            isAdmin={isAdmin} onRename={renameRm} onRemove={removeRm} onAdd={addRm} onAddBulk={addRmsBulk}
-            onWipe={wipeRms} showToast={showToast}
-          />
+        {visitedTabs.dealers && (
+          <div style={{ display: tab === "dealers" ? "block" : "none" }}>
+            <DealersTab
+              master={master} dealerNames={dealerNames} targets={targets} latestDebitByCode={latestDebitByCode}
+              isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk} onSaveTargets={saveTargets}
+              onWipe={wipeDealers} showToast={showToast}
+            />
+          </div>
         )}
-        {tab === "upload" && isAdmin && (historyLoaded ? (
-          <UploadTab
-            dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData} masterByCode={masterByCode}
-            onSaveDaily={saveDaily} onDeleteDaily={deleteDaily} onSaveDebit={saveDebit} onDeleteDebit={deleteDebit} showToast={showToast}
-            kotakSharePct={targets.kotakSharePct ?? 85}
-          />
-        ) : <HistoryLoadingPane />)}
-        {tab === "missingfinder" && isAdmin && (historyLoaded ? (
-          <MissingFinderTab
-            master={master} dailyDates={dailyDates} dailyData={dailyData}
-            onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
-          />
-        ) : <HistoryLoadingPane />)}
-        {tab === "targets" && isAdmin && <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
-        {tab === "tasks" && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
+        {visitedTabs.rms && (
+          <div style={{ display: tab === "rms" ? "block" : "none" }}>
+            <RmsTab
+              master={master} rmNames={rmNames}
+              isAdmin={isAdmin} onRename={renameRm} onRemove={removeRm} onAdd={addRm} onAddBulk={addRmsBulk}
+              onWipe={wipeRms} showToast={showToast}
+            />
+          </div>
+        )}
+        {visitedTabs.upload && isAdmin && (
+          <div style={{ display: tab === "upload" ? "block" : "none" }}>
+            {historyLoaded ? (
+              <UploadTab
+                dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData} masterByCode={masterByCode}
+                onSaveDaily={saveDaily} onDeleteDaily={deleteDaily} onSaveDebit={saveDebit} onDeleteDebit={deleteDebit} showToast={showToast}
+                kotakSharePct={targets.kotakSharePct ?? 85}
+              />
+            ) : <HistoryLoadingPane />}
+          </div>
+        )}
+        {visitedTabs.missingfinder && isAdmin && (
+          <div style={{ display: tab === "missingfinder" ? "block" : "none" }}>
+            {historyLoaded ? (
+              <MissingFinderTab
+                master={master} dailyDates={dailyDates} dailyData={dailyData}
+                onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
+              />
+            ) : <HistoryLoadingPane />}
+          </div>
+        )}
+        {visitedTabs.targets && isAdmin && (
+          <div style={{ display: tab === "targets" ? "block" : "none" }}>
+            <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />
+          </div>
+        )}
+        {visitedTabs.tasks && (
+          <div style={{ display: tab === "tasks" ? "block" : "none" }}>
+            <TasksTab isAdmin={isAdmin} showToast={showToast} />
+          </div>
+        )}
       </div>
 
       {toast && (
