@@ -1722,11 +1722,11 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
         <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
           Clients mapped to both a dealer and an RM split {100 - rmSplitPct}/{rmSplitPct} (dealer/RM). If the RM and dealer are the same person, the dealer keeps 100%. Adjust the split in the Targets tab.
         </div>
-        <div style={{ overflowX: "auto" }}>
+        <div style={{ overflowX: "auto", maxHeight: 520, overflowY: "auto" }}>
           <table>
             <thead><tr><th>Client</th><th>Dealer</th><th>RM</th><th>Net Brokerage</th><th>Split</th><th>Dealer Share</th><th>RM Share</th></tr></thead>
             <tbody>
-              {splitRows.map((r) => (
+              {splitRows.slice(0, 500).map((r) => (
                 <tr key={r.code}>
                   <td>
                     <button onClick={() => setSelectedClient({ code: r.code, name: r.name })} style={{ border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
@@ -1747,6 +1747,7 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
               {splitRows.length === 0 && <tr><td colSpan={7} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No clients mapped to a dealer or RM yet.</td></tr>}
             </tbody>
           </table>
+          {splitRows.length > 500 && <div style={{ fontSize: 12, color: INK_SOFT, padding: 8 }}>Showing first 500 of {splitRows.length} — refine your search.</div>}
         </div>
       </Card>
 
