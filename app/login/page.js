@@ -46,7 +46,7 @@ function LoginForm() {
         alignItems: "center",
         justifyContent: "center",
         background: "#F4F5F7",
-        fontFamily: "Inter, sans-serif",
+        fontFamily: "var(--font-inter), sans-serif",
         padding: 16,
         boxSizing: "border-box",
       }}

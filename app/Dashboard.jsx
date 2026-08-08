@@ -642,7 +642,7 @@ export default function App() {
   };
 
   if (loading) {
-    return <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", background: BG, fontFamily: "Inter, sans-serif", color: INK_SOFT }}>Loading brokerage data…</div>;
+    return <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", background: BG, fontFamily: "var(--font-inter), sans-serif", color: INK_SOFT }}>Loading brokerage data…</div>;
   }
 
   if (mustChangePassword) {
@@ -670,16 +670,15 @@ export default function App() {
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
 
   return (
-    <div className="dt-root" style={{ background: BG, minHeight: 600, fontFamily: "Inter, sans-serif", color: INK, borderRadius: 16 }}>
+    <div className="dt-root" style={{ background: BG, minHeight: 600, fontFamily: "var(--font-inter), sans-serif", color: INK, borderRadius: 16 }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-        * { box-sizing: border-box; font-family: 'Inter', sans-serif; }
+        * { box-sizing: border-box; font-family: var(--font-inter), sans-serif; }
         table { border-collapse: collapse; width: 100%; }
         th, td { text-align: left; padding: 9px 12px; font-size: 13px; }
         thead th { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.4px; color: ${INK_SOFT}; border-bottom: 1px solid ${LINE}; font-weight: 600; }
         tbody tr { border-bottom: 1px solid ${LINE}; }
         tbody tr:hover { background: #FAFBFC; }
-        input, select, button { font-family: 'Inter', sans-serif; font-size: 13.5px; }
+        input, select, button { font-family: var(--font-inter), sans-serif; font-size: 13.5px; }
         input:focus, select:focus, button:focus-visible { outline: 2px solid ${BLUE}; outline-offset: 1px; }
         ::-webkit-scrollbar { height: 8px; width: 8px; }
         ::-webkit-scrollbar-thumb { background: #D6D9DE; border-radius: 8px; }
@@ -876,7 +875,7 @@ function ChangePasswordForm({ onSuccess, onCancel }) {
 
 function ForcedPasswordChange({ username, onDone }) {
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: BG, fontFamily: "Inter, sans-serif", padding: 16, boxSizing: "border-box" }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: BG, fontFamily: "var(--font-inter), sans-serif", padding: 16, boxSizing: "border-box" }}>
       <div style={{ width: "100%", maxWidth: 360 }}>
         <div style={{ textAlign: "center", marginBottom: 16 }}>
           <div style={{ fontSize: 18, fontWeight: 800, color: INK }}>Set your password</div>
