@@ -397,7 +397,6 @@ function useSort(rows, defaultKey, defaultDir = "desc") {
 
 export default function App() {
   const [tab, setTab] = useState("dashboard");
-  const [loading, setLoading] = useState(true);
   const [master, setMaster] = useState([]);
   const [dealerRegistry, setDealerRegistry] = useState([]);
   const [rmRegistry, setRmRegistry] = useState([]);
@@ -437,7 +436,6 @@ export default function App() {
       if (t) setTargets(t);
       if (dates) setDailyDates([...dates].sort());
       if (latestDebit) setLatestDebitByCode(Object.fromEntries(latestDebit.map((r) => [normCode(r.code), r.debit])));
-      setLoading(false);
     })();
   }, []);
 
@@ -651,10 +649,6 @@ export default function App() {
     const data = await res.json();
     showToast(data.count ? `Removed ${data.count} other user account(s)` : "No other user accounts to remove", "gold");
   };
-
-  if (loading) {
-    return <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", background: BG, fontFamily: "var(--font-inter), sans-serif", color: INK_SOFT }}>Loading brokerage data…</div>;
-  }
 
   if (mustChangePassword) {
     return (
