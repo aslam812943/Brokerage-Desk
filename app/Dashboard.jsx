@@ -11,7 +11,7 @@ import {
   Calendar, Trash2, Plus, Search, AlertTriangle, CheckCircle2,
   FileSpreadsheet, Building2, IndianRupee, Pencil, X, Check,
   ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks, KeyRound, UserCog,
-  Download, FileSearch
+  Download, FileSearch, FileBarChart2, Printer
 } from "lucide-react";
 
 /* ---------- design tokens ---------- */
@@ -665,6 +665,7 @@ export default function App() {
     { id: "tasks", label: "Monthly Tasks", icon: ListChecks, color: GOLD, adminOnly: false },
     { id: "upload", label: "Upload", icon: UploadCloud, color: GOLD, adminOnly: true },
     { id: "missingfinder", label: "Missing Finder", icon: FileSearch, color: RED, adminOnly: true },
+    { id: "reports", label: "Reports", icon: FileBarChart2, color: TEAL, adminOnly: true },
     { id: "targets", label: "Targets", icon: Target, color: ROSE, adminOnly: true },
   ];
   const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
@@ -766,6 +767,7 @@ export default function App() {
             onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
           />
         ) : <HistoryLoadingPane />)}
+        {tab === "reports" && isAdmin && <ReportsTab showToast={showToast} />}
         {tab === "targets" && isAdmin && <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
         {tab === "tasks" && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
       </div>
@@ -2524,6 +2526,173 @@ function MissingFinderTab({ master, dailyDates, dailyData, onSaveDaily, onSaveMa
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// Per-dealer report: clients currently mapped, how many actually traded in
+// the selected range, and Total/Net brokerage for that range — computed
+// server-side (/api/reports/dealers) since it joins every DailyRecord in
+// the range against MasterClient, not something to reduce client-side.
+function ReportsTab({ showToast }) {
+  const [period, setPeriod] = useState("month");
+  const [useCustom, setUseCustom] = useState(false);
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [rows, setRows] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const range = useMemo(() => {
+    if (useCustom) return { from: customFrom || null, to: customTo || null };
+    if (period === "all") return { from: null, to: null };
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth();
+    const start = period === "month" ? new Date(y, m, 1)
+      : period === "quarter" ? new Date(y, Math.floor(m / 3) * 3, 1)
+      : new Date(y, 0, 1);
+    return { from: isoDate(start), to: isoDate(now) };
+  }, [period, useCustom, customFrom, customTo]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const qs = new URLSearchParams();
+      if (range.from) qs.set("from", range.from);
+      if (range.to) qs.set("to", range.to);
+      const res = await apiGetCached(`/api/reports/dealers?${qs.toString()}`);
+      if (cancelled) return;
+      setRows(res?.rows || []);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [range.from, range.to]);
+
+  const rangeLabel = range.from || range.to ? `${range.from || "start"} → ${range.to || "today"}` : "All time";
+
+  const totals = (rows || []).reduce((acc, r) => ({
+    clientsMapped: acc.clientsMapped + r.clientsMapped,
+    tradedClients: acc.tradedClients + r.tradedClients,
+    totalBrokerage: acc.totalBrokerage + r.totalBrokerage,
+    netBrokerage: acc.netBrokerage + r.netBrokerage,
+  }), { clientsMapped: 0, tradedClients: 0, totalBrokerage: 0, netBrokerage: 0 });
+
+  const exportExcel = () => {
+    if (!rows || !rows.length) { showToast("Nothing to export", "gold"); return; }
+    const data = rows.map((r) => ({
+      "Dealer": r.dealer,
+      "Clients Mapped": r.clientsMapped,
+      "Traded Clients": r.tradedClients,
+      "Total Brokerage": Math.round(r.totalBrokerage * 100) / 100,
+      "Net Brokerage": Math.round(r.netBrokerage * 100) / 100,
+    }));
+    data.push({ "Dealer": "TOTAL", "Clients Mapped": totals.clientsMapped, "Traded Clients": totals.tradedClients, "Total Brokerage": Math.round(totals.totalBrokerage * 100) / 100, "Net Brokerage": Math.round(totals.netBrokerage * 100) / 100 });
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Dealer Report");
+    XLSX.writeFile(wb, `dealer_report_${range.from || "all"}_to_${range.to || "now"}.xlsx`);
+    showToast(`Exported ${rows.length} dealer(s)`);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Printing only shows .dt-report-printable — same trick as a normal
+          browser print dialog, so "Export PDF" needs no extra dependency:
+          the user picks "Save as PDF" as the destination. */}
+      <style>{`
+        @media print {
+          body * { visibility: hidden; }
+          .dt-report-printable, .dt-report-printable * { visibility: visible; }
+          .dt-report-printable { position: absolute; left: 0; top: 0; width: 100%; }
+        }
+      `}</style>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+        <SectionTitle>Dealer report</SectionTitle>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={exportExcel} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+            <FileSpreadsheet size={14} /> Export Excel
+          </button>
+          <button onClick={() => window.print()} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+            <Printer size={14} /> Export PDF
+          </button>
+        </div>
+      </div>
+
+      <Card style={{ padding: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["month", "quarter", "year", "all"].map((p) => (
+              <button key={p} onClick={() => { setPeriod(p); setUseCustom(false); }} style={{
+                padding: "6px 14px", borderRadius: 8, border: `1px solid ${!useCustom && period === p ? BLUE : LINE}`,
+                background: !useCustom && period === p ? BLUE_SOFT : "#fff", color: !useCustom && period === p ? BLUE : INK_SOFT,
+                fontSize: 12.5, fontWeight: 700, cursor: "pointer", textTransform: "capitalize",
+              }}>
+                {p === "all" ? "All time" : p}
+              </button>
+            ))}
+          </div>
+          <div style={{ width: 1, height: 20, background: LINE }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <label style={{ fontSize: 12.5, color: INK_SOFT, fontWeight: 600 }}>Custom range:</label>
+            <input type="date" value={customFrom} onChange={(e) => { setCustomFrom(e.target.value); setUseCustom(true); }} style={{ ...inputStyle, width: 150 }} />
+            <span style={{ color: INK_SOFT }}>to</span>
+            <input type="date" value={customTo} onChange={(e) => { setCustomTo(e.target.value); setUseCustom(true); }} style={{ ...inputStyle, width: 150 }} />
+            {useCustom && (
+              <button onClick={() => { setUseCustom(false); setCustomFrom(""); setCustomTo(""); }} style={{ border: "none", background: "none", color: RED, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+      </Card>
+
+      <div className="dt-report-printable">
+        <Card style={{ padding: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <FileBarChart2 size={15} color={INK_SOFT} />
+            <span style={{ fontSize: 13, color: INK_SOFT }}>Range: <strong style={{ color: INK }}>{rangeLabel}</strong></span>
+          </div>
+          {loading ? (
+            <div style={{ padding: 40, textAlign: "center", color: INK_SOFT }}>Loading report…</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th>Total Brokerage</th><th>Net Brokerage</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(rows || []).map((r) => (
+                    <tr key={r.dealer}>
+                      <td style={{ fontWeight: 600 }}>{r.dealer}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.clientsMapped}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.tradedClients}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.totalBrokerage)}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.netBrokerage)}</td>
+                    </tr>
+                  ))}
+                  {(!rows || rows.length === 0) && (
+                    <tr><td colSpan={5} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
+                  )}
+                </tbody>
+                {rows && rows.length > 0 && (
+                  <tfoot>
+                    <tr style={{ fontWeight: 700, borderTop: `2px solid ${LINE}` }}>
+                      <td>Total</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.clientsMapped}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.tradedClients}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.totalBrokerage)}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.netBrokerage)}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }
