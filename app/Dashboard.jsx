@@ -441,21 +441,26 @@ export default function App() {
     })();
   }, []);
 
-  // Full daily/debit history (/api/daily + /api/debit, still whole-table reads)
-  // is only needed by Clients/Dealers/RMs/Upload/Missing Finder, which reduce
-  // over every record client-side — the Dashboard tab fetches its own
-  // pre-aggregated summary instead (see the Dashboard component below) and
-  // never needs this at all. Fetched once, lazily, the first time one of
-  // those tabs is opened, instead of unconditionally on every login.
+  // Only Upload/Missing Finder need this, for the per-date history list —
+  // fetched once, lazily, the first time either tab is opened. dailyData/
+  // debitData hold per-date(/source) COUNT + TOTAL + UNMAPPED, never raw
+  // rows: /api/daily and /api/debit used to return every row in the table
+  // unfiltered, which was fine at a few thousand rows but became a genuine
+  // production bottleneck once daily uploads grew past 100k+ rows/day (one
+  // of these full-table reads alone was measured at ~1.9s and pulling
+  // hundreds of thousands of rows per call). The one place that still needs
+  // actual per-client rows for one specific date — Missing Finder's
+  // reconciliation diff — fetches that single date on demand via
+  // /api/daily/[date] instead of relying on this.
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
-    const [dailyByDate, debitByDate] = await Promise.all([apiGet("/api/daily"), apiGet("/api/debit")]);
-    const dData = dailyByDate ?? {};
+    const [dailySummary, debitSummary] = await Promise.all([apiGet("/api/daily/summary"), apiGet("/api/debit/summary")]);
+    const dData = dailySummary ?? {};
     setDailyDates(Object.keys(dData).sort());
     setDailyData(dData);
-    const bData = debitByDate ?? {};
+    const bData = debitSummary ?? {};
     setDebitDates(Object.keys(bData).sort());
     setDebitData(bData);
     setHistoryLoaded(true);
@@ -497,38 +502,45 @@ export default function App() {
 
   // A save only replaces rows from the same source (SW or Kotak) for that date —
   // the other source's rows, if any, are kept so both reports coexist.
+  // dailyData is a per-date/source {count,total,unmapped} summary (see
+  // loadHistory above), so the optimistic update replaces just that one
+  // summary entry instead of splicing raw rows.
   const saveDaily = async (isoD, records) => {
     invalidateReadCache();
     const src = records[0]?.source || "";
-    const total = records.reduce((s, r) => s + (r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok), 0);
-    setDailyData((p) => {
-      const existing = p[isoD] || [];
-      const kept = existing.filter((r) => (r.source || "") !== src);
-      return { ...p, [isoD]: [...kept, ...records] };
-    });
+    const rawTotal = records.reduce((s, r) => s + r.netBrok, 0);
+    const displayTotal = records.reduce((s, r) => s + (r.source === "KOTAK" ? r.netBrok * kotakShare : r.netBrok), 0);
+    const unmapped = records.filter((r) => !masterByCode[normCode(r.code)]).length;
+    setDailyData((p) => ({ ...p, [isoD]: { ...(p[isoD] || {}), [src]: { count: records.length, total: rawTotal, unmapped } } }));
     setDailyDates((p) => (p.includes(isoD) ? p : [...p, isoD].sort()));
     const srcLabel = src === "KOTAK" ? " (Kotak)" : src === "SW" ? " (SW)" : "";
-    showToast(`Saved ${isoD}${srcLabel} — ${records.length} clients, ${fmtFull(total)} net brokerage`);
+    showToast(`Saved ${isoD}${srcLabel} — ${records.length} clients, ${fmtFull(displayTotal)} net brokerage`);
     storageSet(`daily:${isoD}`, records);
   };
   // `source` scopes the delete to just that source's rows; omit it to remove the whole date.
   const deleteDaily = async (isoD, source) => {
     invalidateReadCache();
     const scoped = source !== undefined;
-    const remaining = scoped ? (dailyData[isoD] || []).filter((r) => (r.source || "") !== source) : [];
+    const remainingSources = scoped ? Object.keys(dailyData[isoD] || {}).filter((s) => s !== source) : [];
     setDailyData((p) => {
       const next = { ...p };
-      if (scoped && remaining.length) next[isoD] = remaining;
-      else delete next[isoD];
+      if (scoped && remainingSources.length) {
+        const dateEntry = { ...next[isoD] };
+        delete dateEntry[source];
+        next[isoD] = dateEntry;
+      } else {
+        delete next[isoD];
+      }
       return next;
     });
-    if (!scoped || remaining.length === 0) setDailyDates((p) => p.filter((d) => d !== isoD));
+    if (!scoped || remainingSources.length === 0) setDailyDates((p) => p.filter((d) => d !== isoD));
     const srcLabel = source === "KOTAK" ? " Kotak" : source === "SW" ? " SW" : "";
     showToast(`Removed${srcLabel} ${isoD}`, "gold");
     storageDelete(`daily:${isoD}`, source);
   };
   const saveDebit = async (isoD, records) => {
-    setDebitData((p) => ({ ...p, [isoD]: records }));
+    const unmapped = records.filter((r) => !masterByCode[normCode(r.code)]).length;
+    setDebitData((p) => ({ ...p, [isoD]: { count: records.length, total: records.reduce((s, r) => s + r.debit, 0), unmapped } }));
     setDebitDates((p) => (p.includes(isoD) ? p : [...p, isoD].sort()));
     showToast(`Saved debit report for ${isoD} — ${records.length} clients`);
     storageSet(`debit:${isoD}`, records);
@@ -767,14 +779,14 @@ export default function App() {
         )}
         {tab === "upload" && isAdmin && (historyLoaded ? (
           <UploadTab
-            dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData} masterByCode={masterByCode}
+            dailyDates={dailyDates} dailyData={dailyData} debitDates={debitDates} debitData={debitData}
             onSaveDaily={saveDaily} onDeleteDaily={deleteDaily} onSaveDebit={saveDebit} onDeleteDebit={deleteDebit} showToast={showToast}
             kotakSharePct={targets.kotakSharePct ?? 85}
           />
         ) : <HistoryLoadingPane />)}
         {tab === "missingfinder" && isAdmin && (historyLoaded ? (
           <MissingFinderTab
-            master={master} dailyDates={dailyDates} dailyData={dailyData}
+            master={master} dailyDates={dailyDates}
             onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
           />
         ) : <HistoryLoadingPane />)}
@@ -1947,7 +1959,7 @@ function RmsTab({ master, rmNames, isAdmin, onRename, onRemove, onAdd, onAddBulk
   );
 }
 
-function UploadTab({ dailyDates, dailyData, debitDates, debitData, masterByCode, onSaveDaily, onDeleteDaily, onSaveDebit, onDeleteDebit, showToast, kotakSharePct }) {
+function UploadTab({ dailyDates, dailyData, debitDates, debitData, onSaveDaily, onDeleteDaily, onSaveDebit, onDeleteDebit, showToast, kotakSharePct }) {
   const [sub, setSub] = useState("brokerage");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1966,7 +1978,7 @@ function UploadTab({ dailyDates, dailyData, debitDates, debitData, masterByCode,
           sampleName="daily_brokerage_sample.csv" sampleHeader={["Client Code", "Client Name", "Net Brokerage"]}
           sampleRows={[["100054", "Anto P.O", "478.21"], ["380026", "Abdu N", "86.70"]]}
           parseFn={parseDailySheet} dates={dailyDates} data={dailyData} onSave={onSaveDaily} onDelete={onDeleteDaily}
-          valueKey="netBrok" valueLabel="Net Brokerage" masterByCode={masterByCode} showToast={showToast}
+          valueKey="netBrok" valueLabel="Net Brokerage" showToast={showToast}
           hasSource kotakSharePct={kotakSharePct}
         />
       ) : (
@@ -1976,7 +1988,7 @@ function UploadTab({ dailyDates, dailyData, debitDates, debitData, masterByCode,
           sampleName="debit_report_sample.csv" sampleHeader={["Client Code", "Client Name", "Debit"]}
           sampleRows={[["100054", "Anto P.O", "12500"], ["380026", "Abdu N", "0"]]}
           parseFn={parseDebitSheet} dates={debitDates} data={debitData} onSave={onSaveDebit} onDelete={onDeleteDebit}
-          valueKey="debit" valueLabel="Total Debit" masterByCode={masterByCode} showToast={showToast}
+          valueKey="debit" valueLabel="Total Debit" showToast={showToast}
         />
       )}
     </div>
@@ -1992,7 +2004,7 @@ function detectSourceFromFilename(filename) {
   return null;
 }
 
-function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleHeader, sampleRows, parseFn, dates, data, onSave, onDelete, valueKey, valueLabel, masterByCode, showToast, hasSource, kotakSharePct = 85 }) {
+function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleHeader, sampleRows, parseFn, dates, data, onSave, onDelete, valueKey, valueLabel, showToast, hasSource, kotakSharePct = 85 }) {
   const [pending, setPending] = useState(null);
   const [dateInput, setDateInput] = useState("");
   const [dragOver, setDragOver] = useState(false);
@@ -2024,9 +2036,9 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
 
   // SW and Kotak reports for the same date coexist (a save only replaces its own
   // source's rows) — so block only a same-source re-import, which would silently
-  // replace that source's rows a second time.
-  const existingForDate = dateInput ? data[dateInput] : null;
-  const existingSources = new Set((existingForDate || []).map((r) => r.source || ""));
+  // replace that source's rows a second time. `data[date]` is a {source:
+  // {count,total,unmapped}} summary, so existing sources are just its keys.
+  const existingSources = new Set(hasSource ? Object.keys(data[dateInput] || {}) : []);
   const isDuplicateSource = hasSource && !!pending && !!pending.source && existingSources.has(pending.source);
   const otherExistingSource = hasSource && pending
     ? [...existingSources].find((s) => s && s !== pending.source)
@@ -2039,22 +2051,19 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
   };
 
   // One row per date when there's no source concept (Debit); one row per
-  // date+source when there is (Daily Brokerage), so SW and Kotak show separately.
+  // date+source when there is (Daily Brokerage), so SW and Kotak show
+  // separately — reading the pre-aggregated {count,total,unmapped} summary
+  // directly instead of grouping raw rows client-side.
   const sortedDates = [...dates].sort().reverse();
   const reportRows = hasSource
     ? sortedDates.flatMap((d) => {
-        const bySource = new Map();
-        for (const r of data[d] || []) {
-          const key = r.source || "—";
-          if (!bySource.has(key)) bySource.set(key, []);
-          bySource.get(key).push(r);
-        }
+        const bySource = data[d] || {};
         const order = ["SW", "KOTAK", "—"];
-        return [...bySource.keys()]
-          .sort((a, b) => order.indexOf(a) - order.indexOf(b))
-          .map((src) => ({ date: d, source: src, records: bySource.get(src) }));
+        return Object.keys(bySource)
+          .sort((a, b) => order.indexOf(a || "—") - order.indexOf(b || "—"))
+          .map((src) => ({ date: d, source: src || "—", ...bySource[src] }));
       })
-    : sortedDates.map((d) => ({ date: d, source: undefined, records: data[d] || [] }));
+    : sortedDates.map((d) => ({ date: d, source: undefined, ...(data[d] || { count: 0, total: 0, unmapped: 0 }) }));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -2131,8 +2140,10 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
               <thead><tr><th>Date</th>{hasSource && <th>Source</th>}<th>Clients</th><th>{valueLabel}</th><th>Unmapped</th><th></th></tr></thead>
               <tbody>
                 {reportRows.map((row) => {
-                  const total = row.records.reduce((s, r) => s + shareAdjusted(r), 0);
-                  const unmapped = row.records.filter((r) => !masterByCode[normCode(r.code)]).length;
+                  // row.total is raw (as stored) — the Kotak share is applied
+                  // here for display, same as shareAdjusted() did per-row before.
+                  const total = row.source === "KOTAK" ? row.total * kotakShare : row.total;
+                  const unmapped = row.unmapped;
                   const srcLabel = row.source === "KOTAK" ? "Kotak" : row.source === "SW" ? "SW" : "Unknown";
                   return (
                     <tr key={`${row.date}-${row.source ?? ""}`}>
@@ -2148,7 +2159,7 @@ function UploadPane({ title, accent, accentSoft, helperText, sampleName, sampleH
                           </span>
                         </td>
                       )}
-                      <td>{row.records.length}</td>
+                      <td>{row.count}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(total)}</td>
                       <td>{unmapped > 0 ? <span style={{ color: GOLD, fontWeight: 700 }}>{unmapped}</span> : <span style={{ color: EMERALD }}>0</span>}</td>
                       <td><button onClick={() => onDelete(row.date, hasSource ? (row.source === "—" ? "" : row.source) : undefined)} title="Remove this report" style={{ border: "none", background: "none", cursor: "pointer", color: RED, display: "flex", alignItems: "center" }}><Trash2 size={15} /></button></td>
@@ -2348,7 +2359,7 @@ function UsersSection({ onWipeUsers, showToast }) {
 // Reconciliation tool: upload an SW/Kotak report and diff it against what's
 // already in the system for that date+source, without touching any data
 // until the admin explicitly chooses to save the gaps it finds.
-function MissingFinderTab({ master, dailyDates, dailyData, onSaveDaily, onSaveMaster, showToast }) {
+function MissingFinderTab({ master, dailyDates, onSaveDaily, onSaveMaster, showToast }) {
   const [source, setSource] = useState("SW");
   const [dragOver, setDragOver] = useState(false);
   const [result, setResult] = useState(null);
@@ -2375,7 +2386,11 @@ function MissingFinderTab({ master, dailyDates, dailyData, onSaveDaily, onSaveMa
     const guessDate = guessDateFromFilename(sheetName.match(/\d{6,8}/) ? sheetName : file.name);
     const iso = isoDate(guessDate);
 
-    const existingForSource = (dailyData[iso] || []).filter((r) => (r.source || "") === effectiveSource);
+    // dailyData only carries per-date/source counts now (see loadHistory in
+    // App) — the actual per-client rows for this one date+source, needed to
+    // diff against the uploaded file, are fetched on demand instead of ever
+    // pulling the whole table.
+    const existingForSource = (await apiGet(`/api/daily/${iso}?source=${encodeURIComponent(effectiveSource)}`)) || [];
     const existingByCode = {};
     existingForSource.forEach((r) => (existingByCode[normCode(r.code)] = r));
 
@@ -2392,7 +2407,7 @@ function MissingFinderTab({ master, dailyDates, dailyData, onSaveDaily, onSaveMa
       if (!ex) missingBrokerage.push(r);
       else if (Math.round(ex.netBrok * 100) !== Math.round(r.netBrok * 100)) mismatched.push({ ...r, dbNetBrok: ex.netBrok });
     }
-    setResult({ fileName: file.name, source: effectiveSource, date: iso, total: records.length, missingCustomers, missingBrokerage, mismatched });
+    setResult({ fileName: file.name, source: effectiveSource, date: iso, total: records.length, missingCustomers, missingBrokerage, mismatched, existingForSource });
   };
 
   const addMissingCustomers = async () => {
@@ -2407,9 +2422,9 @@ function MissingFinderTab({ master, dailyDates, dailyData, onSaveDaily, onSaveMa
 
   const saveMissingBrokerage = async () => {
     if (!result?.missingBrokerage.length) return;
-    const existing = dailyData[result.date] || [];
-    const sameSourceExisting = existing.filter((r) => (r.source || "") === result.source);
-    const merged = [...sameSourceExisting, ...result.missingBrokerage.map((r) => ({ ...r, source: result.source }))];
+    // existingForSource was already fetched (scoped to this date+source) by
+    // onFile above, when the reconciliation diff was computed.
+    const merged = [...result.existingForSource, ...result.missingBrokerage.map((r) => ({ ...r, source: result.source }))];
     await onSaveDaily(result.date, merged);
     showToast(`Saved ${result.missingBrokerage.length} missing brokerage row(s) for ${result.date}`);
     setResult((prev) => (prev ? { ...prev, missingBrokerage: [] } : prev));
