@@ -771,6 +771,10 @@ export default function App() {
         {tab === "tasks" && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
       </div>
 
+      <div style={{ textAlign: "center", padding: "6px 0 14px", fontSize: 11, color: "#B7BCC5" }}>
+        v{process.env.NEXT_PUBLIC_APP_VERSION || "dev"}
+      </div>
+
       {toast && (
         <div style={{ position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", background: toast.tone === "red" ? RED : toast.tone === "gold" ? GOLD : NAVY, color: "#fff", padding: "11px 18px", borderRadius: 10, fontSize: 13.5, fontWeight: 500, boxShadow: "0 8px 24px rgba(0,0,0,0.18)", zIndex: 50, display: "flex", alignItems: "center", gap: 8 }}>
           {toast.tone === "red" ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />} {toast.msg}

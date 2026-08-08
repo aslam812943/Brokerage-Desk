@@ -1,4 +1,20 @@
+import { execSync } from "node:child_process";
+
 /** @type {import('next').NextConfig} */
+
+// Short commit SHA baked in at build time, shown at the bottom of the app —
+// lets us tell which deploy is actually live instead of guessing from
+// timing. Vercel always sets VERCEL_GIT_COMMIT_SHA during builds; falls back
+// to reading git directly for local dev/builds.
+function buildVersion() {
+  const sha = process.env.VERCEL_GIT_COMMIT_SHA;
+  if (sha) return sha.slice(0, 7);
+  try {
+    return execSync("git rev-parse --short HEAD").toString().trim();
+  } catch {
+    return "dev";
+  }
+}
 
 // Content-Security-Policy prevents XSS-escalation, external script injection,
 // and data exfiltration via injected fetch/XHR calls.
@@ -27,6 +43,9 @@ const securityHeaders = [
 
 const nextConfig = {
   reactStrictMode: true,
+  env: {
+    NEXT_PUBLIC_APP_VERSION: buildVersion(),
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
