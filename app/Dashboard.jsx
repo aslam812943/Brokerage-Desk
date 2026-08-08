@@ -67,6 +67,17 @@ function parseISO(str) {
   const [y, m, d] = str.split("-").map(Number);
   return new Date(y, m - 1, d);
 }
+// True when from/to (ISO date strings) span exactly one complete calendar
+// month — the 1st through that month's real last day (28-31, leap-year
+// aware since it's driven by `new Date`, not a fixed table).
+function isFullCalendarMonth(from, to) {
+  if (!from || !to) return false;
+  const f = parseISO(from), t = parseISO(to);
+  if (f.getFullYear() !== t.getFullYear() || f.getMonth() !== t.getMonth()) return false;
+  if (f.getDate() !== 1) return false;
+  const lastDay = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
+  return t.getDate() === lastDay;
+}
 const normCode = (c) => String(c || "").trim().toUpperCase().replace(/\s+/g, "");
 // Dealer names are matched case-insensitively against the known list so a
 // re-upload with different casing (e.g. "RASISH" vs "Rasish") snaps onto the
@@ -2545,11 +2556,6 @@ function ReportsTab({ targets, showToast }) {
   const [customTo, setCustomTo] = useState("");
   const [rows, setRows] = useState(null);
   const [loading, setLoading] = useState(true);
-  // Salary vs. incentive-eligibility only makes sense against a single
-  // month of pay, so it's shown only for the plain "Month" preset — not
-  // Quarter/Year/All/custom, which would need to scale salary by however
-  // many months the range spans.
-  const isMonthlyView = period === "month" && !useCustom;
   const incentiveMultiplier = targets.incentiveMultiplier ?? 10;
 
   const range = useMemo(() => {
@@ -2562,6 +2568,16 @@ function ReportsTab({ targets, showToast }) {
       : new Date(y, 0, 1);
     return { from: isoDate(start), to: isoDate(now) };
   }, [period, useCustom, customFrom, customTo]);
+
+  // Salary vs. incentive-eligibility only makes sense against a complete
+  // month of pay — driven by whether the actual selected range (preset OR
+  // custom) spans exactly one full calendar month (1st through the real
+  // last day of that month), not by which control produced it. The "Month"
+  // preset itself is "1st-to-today" (matching how Dealers/RMs/Clients tabs'
+  // own Month buttons already work), so it only qualifies once today is
+  // month-end — reviewing a just-finished month needs a custom 1st-to-31st
+  // range instead, and that now qualifies too.
+  const isMonthlyView = isFullCalendarMonth(range.from, range.to);
 
   useEffect(() => {
     let cancelled = false;
