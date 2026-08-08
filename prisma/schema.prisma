@@ -76,11 +76,16 @@ model DebitRecord {
 }
 
 model Targets {
-  id            Int    @id @default(1)
-  monthly       Float  @default(0)
-  dealerMonthly Json   @default("{}")
-  kotakSharePct Float  @default(85)
-  rmSplitPct    Float  @default(50)
+  id                  Int    @id @default(1)
+  monthly             Float  @default(0)
+  dealerMonthly       Json   @default("{}")
+  kotakSharePct       Float  @default(85)
+  rmSplitPct          Float  @default(50)
+  // Per-dealer monthly salary, and the single company-wide "made X times
+  // salary" multiplier that decides incentive eligibility on the Reports
+  // tab's monthly view.
+  dealerSalary        Json   @default("{}")
+  incentiveMultiplier Float  @default(10)
 }
 
 model DealerTask {

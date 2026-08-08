@@ -8,6 +8,8 @@ const targetsSchema = z.object({
   dealerMonthly: z.record(z.string(), z.number().finite()).default({}),
   kotakSharePct: z.number().finite().min(0).max(100).default(85),
   rmSplitPct: z.number().finite().min(0).max(100).default(50),
+  dealerSalary: z.record(z.string(), z.number().finite()).default({}),
+  incentiveMultiplier: z.number().finite().min(0).default(10),
 });
 
 export async function GET() {
@@ -19,16 +21,21 @@ export async function GET() {
   const dealerMonthly = row?.dealerMonthly ?? {};
   const kotakSharePct = row?.kotakSharePct ?? 85;
   const rmSplitPct = row?.rmSplitPct ?? 50;
+  const dealerSalary = row?.dealerSalary ?? {};
+  const incentiveMultiplier = row?.incentiveMultiplier ?? 10;
 
   if (session.user.role !== "ADMIN") {
     const matchKey = Object.keys(dealerMonthly || {}).find(
       (k) => k.toLowerCase() === session.user.name.toLowerCase()
     );
     const own = matchKey ? dealerMonthly[matchKey] : 0;
+    // Salary is sensitive per-dealer data — a VIEWER login only ever sees
+    // its own dealerMonthly target today, so dealerSalary is withheld
+    // entirely here rather than leaking every dealer's figure.
     return NextResponse.json({ monthly: own, dealerMonthly: { [matchKey || session.user.name]: own }, kotakSharePct, rmSplitPct });
   }
 
-  return NextResponse.json({ monthly, dealerMonthly, kotakSharePct, rmSplitPct });
+  return NextResponse.json({ monthly, dealerMonthly, kotakSharePct, rmSplitPct, dealerSalary, incentiveMultiplier });
 }
 
 export async function PUT(req) {

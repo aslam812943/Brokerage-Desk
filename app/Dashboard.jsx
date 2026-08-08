@@ -394,7 +394,7 @@ export default function App() {
   const [dailyData, setDailyData] = useState({});
   const [debitDates, setDebitDates] = useState([]);
   const [debitData, setDebitData] = useState({});
-  const [targets, setTargets] = useState({ monthly: 0, dealerMonthly: {}, kotakSharePct: 85, rmSplitPct: 50 });
+  const [targets, setTargets] = useState({ monthly: 0, dealerMonthly: {}, kotakSharePct: 85, rmSplitPct: 50, dealerSalary: {}, incentiveMultiplier: 10 });
   const { data: session, update: updateSession } = useSession();
   const role = session?.user?.role === "ADMIN" ? "admin" : "user";
   const username = session?.user?.name || "";
@@ -767,8 +767,8 @@ export default function App() {
             onSaveDaily={saveDaily} onSaveMaster={saveMaster} showToast={showToast}
           />
         ) : <HistoryLoadingPane />)}
-        {tab === "reports" && isAdmin && <ReportsTab showToast={showToast} />}
-        {tab === "targets" && isAdmin && <TargetsTab targets={targets} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
+        {tab === "reports" && isAdmin && <ReportsTab targets={targets} showToast={showToast} />}
+        {tab === "targets" && isAdmin && <TargetsTab targets={targets} dealerNames={dealerNames} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
         {tab === "tasks" && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
       </div>
 
@@ -2534,13 +2534,23 @@ function MissingFinderTab({ master, dailyDates, dailyData, onSaveDaily, onSaveMa
 // the selected range, and Total/Net brokerage for that range — computed
 // server-side (/api/reports/dealers) since it joins every DailyRecord in
 // the range against MasterClient, not something to reduce client-side.
-function ReportsTab({ showToast }) {
-  const [period, setPeriod] = useState("month");
+function ReportsTab({ targets, showToast }) {
+  // Defaults to "all" (matching Dealers/Clients/RMs tabs) rather than
+  // "month" — Month/Quarter/Year here bucket by real calendar time, same
+  // as those tabs' own period buttons, so if the latest upload is behind
+  // the real calendar date, "Month" can legitimately show nothing.
+  const [period, setPeriod] = useState("all");
   const [useCustom, setUseCustom] = useState(false);
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [rows, setRows] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Salary vs. incentive-eligibility only makes sense against a single
+  // month of pay, so it's shown only for the plain "Month" preset — not
+  // Quarter/Year/All/custom, which would need to scale salary by however
+  // many months the range spans.
+  const isMonthlyView = period === "month" && !useCustom;
+  const incentiveMultiplier = targets.incentiveMultiplier ?? 10;
 
   const range = useMemo(() => {
     if (useCustom) return { from: customFrom || null, to: customTo || null };
@@ -2577,15 +2587,30 @@ function ReportsTab({ showToast }) {
     netBrokerage: acc.netBrokerage + r.netBrokerage,
   }), { clientsMapped: 0, tradedClients: 0, totalBrokerage: 0, netBrokerage: 0 });
 
+  // salary/multiplier/eligible for one dealer's row — null salary means "not
+  // set", kept separate from a genuine 0 so it renders as "—" not "0x".
+  const incentiveFor = (r) => {
+    const salary = targets.dealerSalary?.[r.dealer];
+    const hasSalary = salary != null && salary > 0;
+    const multiplier = hasSalary ? r.netBrokerage / salary : null;
+    const eligible = hasSalary && multiplier >= incentiveMultiplier;
+    return { salary: hasSalary ? salary : null, multiplier, eligible };
+  };
+
   const exportExcel = () => {
     if (!rows || !rows.length) { showToast("Nothing to export", "gold"); return; }
-    const data = rows.map((r) => ({
-      "Dealer": r.dealer,
-      "Clients Mapped": r.clientsMapped,
-      "Traded Clients": r.tradedClients,
-      "Total Brokerage": Math.round(r.totalBrokerage * 100) / 100,
-      "Net Brokerage": Math.round(r.netBrokerage * 100) / 100,
-    }));
+    const data = rows.map((r) => {
+      const base = {
+        "Dealer": r.dealer,
+        "Clients Mapped": r.clientsMapped,
+        "Traded Clients": r.tradedClients,
+        "Total Brokerage": Math.round(r.totalBrokerage * 100) / 100,
+        "Net Brokerage": Math.round(r.netBrokerage * 100) / 100,
+      };
+      if (!isMonthlyView) return base;
+      const { salary, multiplier, eligible } = incentiveFor(r);
+      return { ...base, "Salary": salary ?? "", "Multiplier": multiplier != null ? `${multiplier.toFixed(2)}x` : "", "Incentive Eligible": salary == null ? "" : (eligible ? "Yes" : "No") };
+    });
     data.push({ "Dealer": "TOTAL", "Clients Mapped": totals.clientsMapped, "Traded Clients": totals.tradedClients, "Total Brokerage": Math.round(totals.totalBrokerage * 100) / 100, "Net Brokerage": Math.round(totals.netBrokerage * 100) / 100 });
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
@@ -2661,20 +2686,31 @@ function ReportsTab({ showToast }) {
                 <thead>
                   <tr>
                     <th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th>Total Brokerage</th><th>Net Brokerage</th>
+                    {isMonthlyView && <><th>Salary</th><th>Multiplier</th><th>Incentive</th></>}
                   </tr>
                 </thead>
                 <tbody>
-                  {(rows || []).map((r) => (
-                    <tr key={r.dealer}>
-                      <td style={{ fontWeight: 600 }}>{r.dealer}</td>
-                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.clientsMapped}</td>
-                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.tradedClients}</td>
-                      <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.totalBrokerage)}</td>
-                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.netBrokerage)}</td>
-                    </tr>
-                  ))}
+                  {(rows || []).map((r) => {
+                    const { salary, multiplier, eligible } = isMonthlyView ? incentiveFor(r) : {};
+                    return (
+                      <tr key={r.dealer}>
+                        <td style={{ fontWeight: 600 }}>{r.dealer}</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.clientsMapped}</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.tradedClients}</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.totalBrokerage)}</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.netBrokerage)}</td>
+                        {isMonthlyView && (
+                          <>
+                            <td style={{ fontVariantNumeric: "tabular-nums" }}>{salary != null ? fmtFull(salary) : "—"}</td>
+                            <td style={{ fontVariantNumeric: "tabular-nums" }}>{multiplier != null ? `${multiplier.toFixed(2)}x` : "—"}</td>
+                            <td>{salary == null ? <span style={{ color: INK_SOFT }}>—</span> : <Badge text={eligible ? "Eligible" : "Not eligible"} color={eligible ? EMERALD : "#9AA1AC"} />}</td>
+                          </>
+                        )}
+                      </tr>
+                    );
+                  })}
                   {(!rows || rows.length === 0) && (
-                    <tr><td colSpan={5} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
+                    <tr><td colSpan={isMonthlyView ? 8 : 5} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
                   )}
                 </tbody>
                 {rows && rows.length > 0 && (
@@ -2685,6 +2721,7 @@ function ReportsTab({ showToast }) {
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.tradedClients}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.totalBrokerage)}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.netBrokerage)}</td>
+                      {isMonthlyView && <><td></td><td></td><td></td></>}
                     </tr>
                   </tfoot>
                 )}
@@ -2697,19 +2734,28 @@ function ReportsTab({ showToast }) {
   );
 }
 
-function TargetsTab({ targets, onSave, onWipeUsers, showToast }) {
+function TargetsTab({ targets, dealerNames, onSave, onWipeUsers, showToast }) {
   const [monthly, setMonthly] = useState(targets.monthly || 0);
   const [kotakSharePct, setKotakSharePct] = useState(targets.kotakSharePct ?? 85);
   const [rmSplitPct, setRmSplitPct] = useState(targets.rmSplitPct ?? 50);
+  const [incentiveMultiplier, setIncentiveMultiplier] = useState(targets.incentiveMultiplier ?? 10);
+  const [salaryDrafts, setSalaryDrafts] = useState({});
   const save = () => {
     const pct = Number(kotakSharePct);
     const rmPct = Number(rmSplitPct);
+    const mult = Number(incentiveMultiplier);
     onSave({
       ...targets,
       monthly: Number(monthly) || 0,
       kotakSharePct: isNaN(pct) ? 85 : Math.min(100, Math.max(0, pct)),
       rmSplitPct: isNaN(rmPct) ? 50 : Math.min(100, Math.max(0, rmPct)),
+      incentiveMultiplier: isNaN(mult) ? 10 : Math.max(0, mult),
     });
+  };
+  const saveSalary = (dealer) => {
+    const v = Number(salaryDrafts[dealer]);
+    onSave({ ...targets, dealerSalary: { ...targets.dealerSalary, [dealer]: isNaN(v) ? 0 : Math.max(0, v) } });
+    showToast(`Saved salary for ${dealer}`);
   };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 520 }}>
@@ -2775,7 +2821,50 @@ function TargetsTab({ targets, onSave, onWipeUsers, showToast }) {
         </div>
       </Card>
 
+      <Card style={{ padding: 20 }}>
+        <SectionTitle>Incentive multiplier target</SectionTitle>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+          On the Reports tab's monthly view, a dealer is marked incentive-eligible when their Net Brokerage for the month is at least this many times their monthly salary.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            type="number" min="0" step="0.5" value={incentiveMultiplier}
+            onChange={(e) => setIncentiveMultiplier(e.target.value)}
+            style={{ ...inputStyle, width: 90, fontSize: 15, fontWeight: 700 }}
+          />
+          <span style={{ fontSize: 14, color: INK_SOFT }}>x salary</span>
+        </div>
+      </Card>
+
       <button onClick={save} style={{ alignSelf: "flex-start", padding: "10px 22px", borderRadius: 9, border: "none", background: ROSE, color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>Save settings</button>
+
+      <Card style={{ padding: 20 }}>
+        <SectionTitle>Dealer monthly salary</SectionTitle>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+          Used only for the incentive-eligible calculation on the Reports tab. Leave blank/0 for a dealer to exclude them from that check.
+        </div>
+        {dealerNames.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: INK_SOFT }}>No dealers yet — add one from the Dealers tab first.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {dealerNames.map((d) => (
+              <div key={d} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, width: 160, flexShrink: 0 }}>{d}</span>
+                <span style={{ fontSize: 13, color: INK_SOFT }}>₹</span>
+                <input
+                  type="number" min="0"
+                  value={salaryDrafts[d] ?? targets.dealerSalary?.[d] ?? 0}
+                  onChange={(e) => setSalaryDrafts((p) => ({ ...p, [d]: e.target.value }))}
+                  style={{ ...inputStyle, width: 140 }}
+                />
+                <button onClick={() => saveSalary(d)} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: ROSE, color: "#fff", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+                  Save
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
 
       <UsersSection onWipeUsers={onWipeUsers} showToast={showToast} />
     </div>
