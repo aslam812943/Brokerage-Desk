@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "../../../lib/prisma";
+import { pgPool } from "../../../lib/pgPool";
 import { requireSession } from "../../../lib/apiAuth";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -30,17 +31,21 @@ export async function GET(req) {
   const { searchParams } = new URL(req.url);
   const from = searchParams.get("from");
   const to   = searchParams.get("to");
-  const where = {};
-  if (from && ISO_DATE.test(from)) where.date = { ...where.date, gte: from };
-  if (to   && ISO_DATE.test(to))   where.date = { ...where.date, lte: to };
+  const conditions = [];
+  const params = [];
+  if (from && ISO_DATE.test(from)) { params.push(from); conditions.push(`"date" >= $${params.length}`); }
+  if (to   && ISO_DATE.test(to))   { params.push(to);   conditions.push(`"date" <= $${params.length}`); }
+  const whereSql = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  params.push(MAX_RECORDS);
 
-  // Sort newest-first so that if the cap is ever hit, it's the oldest
-  // (least relevant) dates that get dropped, not the most recent uploads.
-  const rows = await prisma.dailyRecord.findMany({
-    where,
-    orderBy: { date: "desc" },
-    take: MAX_RECORDS,
-  });
+  // Raw pg query instead of prisma.dailyRecord.findMany() — at this table's
+  // size (180k+ rows), Prisma's per-row model mapping was the entire cost of
+  // this request (~40s), not the query itself (~150ms). Same shape/contract,
+  // just skipping the ORM layer for this one bulk-read hot path.
+  const { rows } = await pgPool.query(
+    `SELECT "date", "code", "name", "netBrok", "source" FROM "DailyRecord" ${whereSql} ORDER BY "date" DESC LIMIT $${params.length}`,
+    params
+  );
 
   const byDate = {};
   for (const r of rows) {
