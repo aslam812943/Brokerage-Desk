@@ -11,7 +11,7 @@ import {
   Calendar, Trash2, Plus, Search, AlertTriangle, CheckCircle2,
   FileSpreadsheet, Building2, IndianRupee, Pencil, X, Check,
   ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks, KeyRound, UserCog,
-  Download, FileSearch, FileBarChart2, Printer
+  Download, FileSearch, FileBarChart2, Printer, Gauge
 } from "lucide-react";
 
 /* ---------- design tokens ---------- */
@@ -676,6 +676,7 @@ export default function App() {
 
   const NAV = [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, color: BLUE, adminOnly: false },
+    { id: "mis", label: "MIS", icon: Gauge, color: EMERALD, adminOnly: false },
     { id: "clients", label: "Clients", icon: Users, color: TEAL, adminOnly: false },
     { id: "dealers", label: "Dealers", icon: Building2, color: VIOLET, adminOnly: false },
     { id: "rms", label: "RMs", icon: UserCog, color: ROSE, adminOnly: false },
@@ -751,6 +752,7 @@ export default function App() {
 
       <div className="dt-content" style={{ padding: 22 }}>
         {tab === "dashboard" && <Dashboard master={master} targets={targets} isAdmin={isAdmin} />}
+        {tab === "mis" && <MisTab isAdmin={isAdmin} showToast={showToast} />}
         {tab === "clients" && (
           <ClientsTab
             master={master} targets={targets} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
@@ -3154,6 +3156,213 @@ function TasksSummaryCard({ isAdmin }) {
         ))}
       </div>
     </Card>
+  );
+}
+
+// One row per client this dealer/RM traded with this month, tagged by which
+// role earned the share — see the 'dealer' vs 'rm' role on each row returned
+// by /api/mis/summary (a client where someone is both dealer and RM on the
+// same record only ever comes back tagged 'dealer', never both).
+function TradedClientsList({ clients }) {
+  if (!clients?.length) return <div style={{ fontSize: 12.5, color: "#B7BCC5", padding: "8px 4px" }}>No trades this month yet.</div>;
+  return (
+    <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, padding: 2 }}>
+      {clients.map((c) => (
+        <div key={c.code} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "7px 10px", borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12.5 }}>
+          <span><strong style={{ color: INK }}>{c.code}</strong> <span style={{ color: INK_SOFT }}>{c.name}</span></span>
+          <Badge text={c.role === "rm" ? "RM" : "Dealer"} color={c.role === "rm" ? ROSE : VIOLET} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MisSummaryCard({ data }) {
+  const [showClients, setShowClients] = useState(false);
+  const monthLabel = data.latestDate ? `${MONTH_NAMES[parseISO(data.latestDate).getMonth()]} ${parseISO(data.latestDate).getFullYear()}` : "";
+  const pctOfTarget = data.target > 0 ? (data.mtdRevenue / data.target) * 100 : null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+        <SectionTitle>MIS summary — {monthLabel}</SectionTitle>
+        <Badge text={data.dealer} color={dealerColor(data.dealer)} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
+        <KPI label="Target" value={fmtINR(data.target)} tone="violet" icon={Target} />
+        <KPI label="Daily Target" value={fmtINR(data.dailyTarget)} sub={`${data.tradingDaysInMonth} trading day(s) this month`} tone="gold" icon={Gauge} />
+        <KPI
+          label="Till-date revenue"
+          value={fmtINR(data.mtdRevenue)}
+          sub={pctOfTarget !== null ? `${pctOfTarget.toFixed(0)}% of target` : "Set a target in the Targets tab"}
+          tone={pctOfTarget === null ? "blue" : pctOfTarget >= 100 ? "emerald" : pctOfTarget >= 60 ? "gold" : "red"}
+          icon={TrendingUp}
+        />
+        <KPI label="Yesterday's revenue" value={fmtINR(data.yesterdayRevenue)} tone="ink" icon={Calendar} />
+        <KPI label="Total Clients Mapped" value={data.clientsMapped} tone="teal" icon={Users} />
+      </div>
+      <Card style={{ padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => setShowClients((v) => !v)}>
+          <SectionTitle>Total traded clients this month ({data.tradedClientsCount})</SectionTitle>
+          {showClients ? <ChevronUp size={16} color={INK_SOFT} /> : <ChevronDown size={16} color={INK_SOFT} />}
+        </div>
+        {showClients && <div style={{ marginTop: 10 }}><TradedClientsList clients={data.tradedClients} /></div>}
+      </Card>
+    </div>
+  );
+}
+
+// Admin-only: add/remove the NSE trading-holiday calendar that every dealer's
+// Daily Target (monthly target / trading days in the month) is computed
+// against. Ships empty on purpose — see the MIS plan for why dates aren't
+// pre-seeded — so this is the only place that calendar ever gets populated.
+function HolidaysManager({ showToast, onChange }) {
+  const [holidays, setHolidays] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [date, setDate] = useState("");
+  const [name, setName] = useState("");
+  const [year, setYear] = useState(String(new Date().getFullYear()));
+
+  const load = async () => {
+    setLoading(true);
+    const rows = await apiGet("/api/holidays");
+    setHolidays(rows || []);
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const addHoliday = async () => {
+    if (!date) { showToast("Pick a date", "gold"); return; }
+    const res = await fetch("/api/holidays", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date, name: name.trim() }),
+    });
+    if (res.ok) {
+      showToast(`Added holiday ${date}`);
+      setDate(""); setName("");
+      await load();
+      onChange();
+    } else {
+      showToast("Couldn't add holiday", "red");
+    }
+  };
+
+  const removeHoliday = async (d) => {
+    const ok = await apiDelete(`/api/holidays?date=${encodeURIComponent(d)}`);
+    if (ok) { showToast(`Removed ${d}`); await load(); onChange(); }
+    else showToast("Couldn't remove holiday", "red");
+  };
+
+  const filtered = holidays.filter((h) => h.date.startsWith(year));
+
+  return (
+    <Card style={{ padding: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+        <SectionTitle>Trading holidays (used for Daily Target)</SectionTitle>
+        <input value={year} onChange={(e) => setYear(e.target.value)} style={{ ...inputStyle, width: 90 }} placeholder="Year" />
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, width: 150 }} />
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Holiday name (optional)" style={{ ...inputStyle, flex: 1, minWidth: 160 }} />
+        <button onClick={addHoliday} style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 14px", borderRadius: 8, border: "none", background: BLUE, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+          <Plus size={14} /> Add
+        </button>
+      </div>
+      {loading ? (
+        <div style={{ fontSize: 12.5, color: INK_SOFT }}>Loading…</div>
+      ) : filtered.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: "#B7BCC5" }}>No trading holidays added for {year} yet.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+          {filtered.map((h) => (
+            <div key={h.date} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px", borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12.5 }}>
+              <span><strong>{h.date}</strong>{h.name ? ` — ${h.name}` : ""}</span>
+              <button onClick={() => removeHoliday(h.date)} style={{ border: "none", background: "none", cursor: "pointer", color: RED }}>
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function MisAdminTable({ rows }) {
+  const [expanded, setExpanded] = useState(null);
+  return (
+    <Card style={{ padding: 18 }}>
+      <SectionTitle>All dealers — MIS summary</SectionTitle>
+      <div style={{ overflowX: "auto" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Till-date</th><th>Yesterday</th><th>Clients Mapped</th><th>Traded Clients</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.flatMap((r) => {
+              const trs = [
+                <tr key={r.dealer} onClick={() => setExpanded(expanded === r.dealer ? null : r.dealer)} style={{ cursor: "pointer" }}>
+                  <td><Badge text={r.dealer} color={dealerColor(r.dealer)} /></td>
+                  <td>{fmtINR(r.target)}</td>
+                  <td>{fmtINR(r.dailyTarget)} <span style={{ color: INK_SOFT, fontSize: 11 }}>({r.tradingDaysInMonth}d)</span></td>
+                  <td>{fmtINR(r.mtdRevenue)}</td>
+                  <td>{fmtINR(r.yesterdayRevenue)}</td>
+                  <td>{r.clientsMapped}</td>
+                  <td style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    {r.tradedClientsCount} {expanded === r.dealer ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                  </td>
+                </tr>,
+              ];
+              if (expanded === r.dealer) {
+                trs.push(
+                  <tr key={`${r.dealer}-detail`}>
+                    <td colSpan={7} style={{ background: "#FAFBFC" }}>
+                      <TradedClientsList clients={r.tradedClients} />
+                    </td>
+                  </tr>
+                );
+              }
+              return trs;
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function MisTab({ isAdmin, showToast }) {
+  const [data, setData] = useState(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await apiGetCached("/api/mis/summary");
+      if (!cancelled) setData(res);
+    })();
+    return () => { cancelled = true; };
+  }, [reloadKey]);
+
+  const refresh = () => { invalidateReadCache(); setReloadKey((k) => k + 1); };
+
+  if (data === null) {
+    return <Card style={{ padding: 50, textAlign: "center", color: INK_SOFT, fontSize: 13.5 }}>Loading MIS…</Card>;
+  }
+
+  if (!isAdmin) {
+    return <MisSummaryCard data={data} />;
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <HolidaysManager showToast={showToast} onChange={refresh} />
+      <MisAdminTable rows={data.rows || []} />
+    </div>
   );
 }
 
