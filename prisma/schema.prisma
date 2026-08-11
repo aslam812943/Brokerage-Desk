@@ -100,6 +100,16 @@ model DealerTask {
   @@index([dealer, month])
 }
 
+// Admin-editable NSE/BSE trading holiday calendar — used to compute each
+// dealer's Daily Target (monthly target / trading days in the month) on the
+// MIS tab. Ships empty; dates aren't seeded since lunar-calendar holidays
+// (Holi, Diwali, Eid, ...) shift every year and a wrong guess would silently
+// corrupt the daily-target math.
+model TradingHoliday {
+  date String @id // ISO yyyy-mm-dd
+  name String @default("")
+}
+
 // Immutable audit trail for all destructive / sensitive operations
 model AuditLog {
   id        String   @id @default(cuid())
