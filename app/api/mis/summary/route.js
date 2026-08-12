@@ -119,7 +119,7 @@ export async function GET() {
   // from scratch over the same month-wide join.
   const personRows = await prisma.$queryRaw`
     WITH records AS (
-      SELECT dr.date, dr.code, dr.name,
+      SELECT dr.date, dr."codeNorm" AS "codeNorm", dr.code, dr.name,
              COALESCE(NULLIF(m.dealer, ''), '') AS dealer,
              COALESCE(NULLIF(m.rm, ''), '') AS rm,
              (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS "netRaw"
@@ -134,19 +134,24 @@ export async function GET() {
       FROM records
     ),
     person_rows AS (
-      SELECT dealer AS person, date, code, name, "netRaw" * "dealerPct" / 100.0 AS amt, 'dealer' AS role FROM split WHERE dealer <> ''
+      SELECT dealer AS person, date, "codeNorm", code, name, "netRaw" * "dealerPct" / 100.0 AS amt, 'dealer' AS role FROM split WHERE dealer <> ''
       UNION ALL
-      SELECT rm AS person, date, code, name, "netRaw" * "rmPct" / 100.0 AS amt, 'rm' AS role FROM split WHERE rm <> '' AND lower(rm) <> lower(dealer)
+      SELECT rm AS person, date, "codeNorm", code, name, "netRaw" * "rmPct" / 100.0 AS amt, 'rm' AS role FROM split WHERE rm <> '' AND lower(rm) <> lower(dealer)
     ),
     per_client AS (
-      SELECT person, code, MAX(name) AS name, role, SUM(amt) AS client_amt
+      -- Grouped/counted by codeNorm, not the raw uploaded code — the same
+      -- client can appear with different code casing across upload dates
+      -- (e.g. "XV7I3" vs "XV7i3"), which previously double-counted them as
+      -- two distinct traded clients. code/name here are just a display
+      -- pick, not the identity key.
+      SELECT person, "codeNorm", MAX(code) AS code, MAX(name) AS name, role, SUM(amt) AS client_amt
       FROM person_rows
-      GROUP BY person, code, role
+      GROUP BY person, "codeNorm", role
     )
     SELECT pr.person,
            COALESCE(SUM(pr.amt), 0)::float8 AS mtd,
            COALESCE(SUM(pr.amt) FILTER (WHERE pr.date = ${prevDate ?? ""}), 0)::float8 AS yesterday,
-           COUNT(DISTINCT pr.code)::int AS "tradedCount",
+           COUNT(DISTINCT pr."codeNorm")::int AS "tradedCount",
            (
              SELECT jsonb_agg(jsonb_build_object('code', pc.code, 'name', pc.name, 'role', pc.role) ORDER BY pc.code)
              FROM per_client pc WHERE pc.person = pr.person
