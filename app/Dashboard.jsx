@@ -58,6 +58,9 @@ const fmtINR = (n) => {
 const fmtFull = (n) => `₹${(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 const quarterOf = (d) => Math.floor(d.getMonth() / 3) + 1;
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+// Matches the Dashboard tab's own period buttons ("day" reads as "Today"
+// there) so chart headers say the same thing the user just clicked.
+const PERIOD_LABEL = { day: "Today", month: "Month", quarter: "Quarter", year: "Year" };
 
 function isoDate(d) {
   const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0");
@@ -562,9 +565,9 @@ export default function App() {
     const nextReg = dealerRegistry.filter((d) => d !== oldName);
     if (!nextReg.includes(newName)) nextReg.push(newName);
     await saveDealerRegistry(nextReg);
-    const dm = { ...targets.dealerMonthly };
-    if (dm[oldName] !== undefined) { dm[newName] = dm[oldName]; delete dm[oldName]; }
-    await saveTargets({ ...targets, dealerMonthly: dm });
+    const ds = { ...targets.dealerSalary };
+    if (ds[oldName] !== undefined) { ds[newName] = ds[oldName]; delete ds[oldName]; }
+    await saveTargets({ ...targets, dealerSalary: ds });
     showToast(`Renamed ${oldName} → ${newName}`);
   };
   const removeDealer = async (name) => {
@@ -572,8 +575,8 @@ export default function App() {
     const nextMaster = master.map((m) => (m.dealer === name ? { ...m, dealer: "" } : m));
     await saveMaster(nextMaster);
     await saveDealerRegistry(dealerRegistry.filter((d) => d !== name));
-    const dm = { ...targets.dealerMonthly }; delete dm[name];
-    await saveTargets({ ...targets, dealerMonthly: dm });
+    const ds = { ...targets.dealerSalary }; delete ds[name];
+    await saveTargets({ ...targets, dealerSalary: ds });
     showToast(affected ? `Removed ${name} — ${affected} client(s) now unmapped` : `Removed ${name}`, "gold");
   };
   const addDealer = async (name) => {
@@ -641,7 +644,7 @@ export default function App() {
     const affected = master.filter((m) => m.dealer).length;
     await saveMaster(master.map((m) => ({ ...m, dealer: "" })));
     await saveDealerRegistry([]);
-    await saveTargets({ ...targets, dealerMonthly: {} });
+    await saveTargets({ ...targets, dealerSalary: {} });
     showToast(affected ? `All dealers removed — ${affected} client(s) now unmapped` : "All dealers removed", "gold");
   };
   const wipeRms = async () => {
@@ -762,7 +765,7 @@ export default function App() {
         {tab === "dealers" && (
           <DealersTab
             master={master} dealerNames={dealerNames} targets={targets} latestDebitByCode={latestDebitByCode}
-            isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk} onSaveTargets={saveTargets}
+            isAdmin={isAdmin} onRename={renameDealer} onRemove={removeDealer} onAdd={addDealer} onAddBulk={addDealersBulk}
             onWipe={wipeDealers} showToast={showToast}
           />
         )}
@@ -1079,7 +1082,7 @@ function Dashboard({ master, targets }) {
 
       <div className="dt-chart-grid" style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
         <Card style={{ padding: 18 }}>
-          <SectionTitle>Dealer-wise net brokerage — after RM split ({period})</SectionTitle>
+          <SectionTitle>Dealer-wise net brokerage — after RM split ({PERIOD_LABEL[period]})</SectionTitle>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={dealerRows} margin={{ top: 8, right: 12, left: -14, bottom: 20 }}>
               <CartesianGrid stroke={LINE} vertical={false} />
@@ -1093,7 +1096,7 @@ function Dashboard({ master, targets }) {
           </ResponsiveContainer>
         </Card>
         <Card style={{ padding: 18 }}>
-          <SectionTitle>Dealer share — after RM split ({period})</SectionTitle>
+          <SectionTitle>Dealer share — after RM split ({PERIOD_LABEL[period]})</SectionTitle>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie data={dealerRows} dataKey="value" nameKey="dealer" innerRadius={55} outerRadius={95} paddingAngle={2}>
@@ -1107,7 +1110,7 @@ function Dashboard({ master, targets }) {
       </div>
 
       <Card style={{ padding: 18 }}>
-        <SectionTitle>Top 10 clients by net brokerage ({period})</SectionTitle>
+        <SectionTitle>Top 10 clients by net brokerage ({PERIOD_LABEL[period]})</SectionTitle>
         {topClients.length === 0 ? (
           <div style={{ fontSize: 13.5, color: INK_SOFT, padding: "12px 4px" }}>No brokerage data for this period yet.</div>
         ) : (
@@ -1463,7 +1466,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   );
 }
 
-function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, onRename, onRemove, onAdd, onAddBulk, onSaveTargets, onWipe, showToast }) {
+function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, onRename, onRemove, onAdd, onAddBulk, onWipe, showToast }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("month");
   const [selectedClient, setSelectedClient] = useState(null);
@@ -1471,7 +1474,6 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
   const [newDealer, setNewDealer] = useState("");
   const [editing, setEditing] = useState(null);
   const [editName, setEditName] = useState("");
-  const [targetDrafts, setTargetDrafts] = useState({});
   const [bulkOpen, setBulkOpen] = useState(false);
   const [brokerageByClient, setBrokerageByClient] = useState({});
   const inputRef = useRef(null);
@@ -1553,14 +1555,14 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
     return c;
   }, [master]);
 
+  // Monthly Target is derived, not entered — salary × incentive multiplier
+  // (Targets tab), the same threshold the incentive-eligibility badge uses,
+  // so the progress bar always tracks whatever counts toward incentive.
+  const incentiveMultiplier = targets.incentiveMultiplier ?? 10;
   const rows = dealerNames.filter((d) => !search || d.toLowerCase().includes(search.toLowerCase())).map((d) => ({
-    dealer: d, clients: clientCount[d] || 0, brokerage: brokerageByDealer[d] || 0, netBrokerage: netBrokerageByDealer[d] || 0, target: targets.dealerMonthly?.[d] || 0,
+    dealer: d, clients: clientCount[d] || 0, brokerage: brokerageByDealer[d] || 0, netBrokerage: netBrokerageByDealer[d] || 0,
+    target: (targets.dealerSalary?.[d] || 0) * incentiveMultiplier,
   })).sort((a, b) => b.brokerage - a.brokerage);
-
-  const saveTarget = (dealer) => {
-    const v = Number(targetDrafts[dealer]);
-    onSaveTargets({ ...targets, dealerMonthly: { ...targets.dealerMonthly, [dealer]: isNaN(v) ? 0 : v } });
-  };
 
   const [splitSearch, setSplitSearch] = useState("");
 
@@ -1682,7 +1684,7 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
             <thead><tr><th>Dealer</th><th>Clients</th><th>Total Brokerage</th><th>Net Brokerage</th><th>Monthly Target</th><th style={{ width: 150 }}>Progress</th><th></th>{isAdmin && <th></th>}</tr></thead>
             <tbody>
               {rows.map((r) => {
-                const monthPct = targets.dealerMonthly?.[r.dealer] > 0 && period === "month" ? ((brokerageByDealer[r.dealer] || 0) / targets.dealerMonthly[r.dealer]) * 100 : null;
+                const monthPct = r.target > 0 && period === "month" ? ((brokerageByDealer[r.dealer] || 0) / r.target) * 100 : null;
                 return (
                   <tr key={r.dealer}>
                     <td>
@@ -1698,12 +1700,8 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
                     <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.brokerage)}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.netBrokerage)}</td>
                     <td>
-                      {isAdmin ? (
-                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                          <input type="number" placeholder="0" defaultValue={r.target || ""} onChange={(e) => setTargetDrafts({ ...targetDrafts, [r.dealer]: e.target.value })} style={{ ...inputStyle, width: 100 }} />
-                          <button onClick={() => saveTarget(r.dealer)} style={{ border: "none", background: "none", cursor: "pointer", color: BLUE, fontSize: 11.5, fontWeight: 700 }}>Save</button>
-                        </div>
-                      ) : (r.target ? fmtFull(r.target) : "—")}
+                      {r.target ? fmtFull(r.target) : <span style={{ color: "#B7BCC5" }}>—</span>}
+                      {isAdmin && <div style={{ fontSize: 10.5, color: INK_SOFT }}>salary × {incentiveMultiplier}x</div>}
                     </td>
                     <td>{monthPct !== null ? <div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ flex: 1 }}><ProgressBar pct={monthPct} /></div><span style={{ fontSize: 11.5, color: INK_SOFT, width: 34 }}>{monthPct.toFixed(0)}%</span></div> : <span style={{ color: "#B7BCC5", fontSize: 12 }}>{period === "month" ? "no target" : "monthly only"}</span>}</td>
                     <td>
@@ -2843,7 +2841,7 @@ function TargetsTab({ targets, dealerNames, onSave, onWipeUsers, showToast }) {
       <Card style={{ padding: 20 }}>
         <SectionTitle>Incentive multiplier target</SectionTitle>
         <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
-          On the Reports tab's monthly view, a dealer is marked incentive-eligible when their Net Brokerage for the month is at least this many times their monthly salary.
+          Each dealer's Monthly Target (Dealers and MIS tabs) is salary × this multiplier. On the Reports tab's monthly view, a dealer is marked incentive-eligible once their Net Brokerage for the month reaches that same target.
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <input
@@ -2860,7 +2858,7 @@ function TargetsTab({ targets, dealerNames, onSave, onWipeUsers, showToast }) {
       <Card style={{ padding: 20 }}>
         <SectionTitle>Dealer monthly salary</SectionTitle>
         <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
-          Used only for the incentive-eligible calculation on the Reports tab. Leave blank/0 for a dealer to exclude them from that check.
+          Drives each dealer's Monthly Target (salary × the incentive multiplier above) on the Dealers and MIS tabs, and the incentive-eligible calculation on the Reports tab. Leave blank/0 to exclude a dealer from all three.
         </div>
         {dealerNames.length === 0 ? (
           <div style={{ fontSize: 12.5, color: INK_SOFT }}>No dealers yet — add one from the Dealers tab first.</div>

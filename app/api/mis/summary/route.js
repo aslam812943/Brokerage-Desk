@@ -34,16 +34,18 @@ function caseInsensitiveGet(obj, key) {
 }
 
 // Mirrors ReportsTab's incentiveFor() on the client: null salary means "not
-// set", kept separate from a genuine 0 so the UI renders "—" not "0x".
-function buildPersonSummary(name, aggByPerson, mappedByDealer, dealerMonthly, tradingDays, dealerSalary, incentiveMultiplier) {
+// set", kept separate from a genuine 0 so the UI renders "—" not "0x". Target
+// is derived (salary × incentiveMultiplier) rather than a separately-entered
+// figure, so it always tracks whatever counts toward incentive eligibility.
+function buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, dealerSalary, incentiveMultiplier) {
   const agg = aggByPerson[name.toLowerCase()];
-  const target = Number(caseInsensitiveGet(dealerMonthly, name)) || 0;
   const clientsMapped = Number(caseInsensitiveGet(mappedByDealer, name)) || 0;
   const mtdRevenue = agg?.mtd || 0;
   const rawSalary = Number(caseInsensitiveGet(dealerSalary, name));
   const hasSalary = !isNaN(rawSalary) && rawSalary > 0;
   const multiplier = hasSalary ? mtdRevenue / rawSalary : null;
   const eligible = hasSalary && multiplier >= incentiveMultiplier;
+  const target = hasSalary ? rawSalary * incentiveMultiplier : 0;
   return {
     dealer: name,
     target,
@@ -91,7 +93,6 @@ export async function GET() {
 
   const kotakSharePct = targetsRow?.kotakSharePct ?? 85;
   const rmSplitPct = targetsRow?.rmSplitPct ?? 50;
-  const dealerMonthly = targetsRow?.dealerMonthly ?? {};
   const dealerSalary = targetsRow?.dealerSalary ?? {};
   const incentiveMultiplier = targetsRow?.incentiveMultiplier ?? 10;
   const mappedByDealer = Object.fromEntries(mappedCounts.map((r) => [r.dealer, r._count._all]));
@@ -147,7 +148,7 @@ export async function GET() {
     return NextResponse.json({
       latestDate,
       prevDate,
-      ...buildPersonSummary(dealer, aggByPerson, mappedByDealer, dealerMonthly, tradingDays, dealerSalary, incentiveMultiplier),
+      ...buildPersonSummary(dealer, aggByPerson, mappedByDealer, tradingDays, dealerSalary, incentiveMultiplier),
     });
   }
 
@@ -161,7 +162,7 @@ export async function GET() {
   const dealerNames = dealerNameRows.map((r) => r.name);
 
   const rows = dealerNames
-    .map((name) => buildPersonSummary(name, aggByPerson, mappedByDealer, dealerMonthly, tradingDays, dealerSalary, incentiveMultiplier))
+    .map((name) => buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, dealerSalary, incentiveMultiplier))
     .sort((a, b) => b.mtdRevenue - a.mtdRevenue);
 
   return NextResponse.json({ latestDate, prevDate, rows });

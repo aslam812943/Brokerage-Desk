@@ -25,14 +25,17 @@ export async function GET() {
   const incentiveMultiplier = row?.incentiveMultiplier ?? 10;
 
   if (session.user.role !== "ADMIN") {
-    const matchKey = Object.keys(dealerMonthly || {}).find(
+    // Salary is sensitive per-dealer data — a VIEWER login only ever sees
+    // its own salary (needed to compute its own Monthly Target as
+    // salary × incentiveMultiplier), never any other dealer's figure.
+    const matchKey = Object.keys(dealerSalary || {}).find(
       (k) => k.toLowerCase() === session.user.name.toLowerCase()
     );
-    const own = matchKey ? dealerMonthly[matchKey] : 0;
-    // Salary is sensitive per-dealer data — a VIEWER login only ever sees
-    // its own dealerMonthly target today, so dealerSalary is withheld
-    // entirely here rather than leaking every dealer's figure.
-    return NextResponse.json({ monthly: own, dealerMonthly: { [matchKey || session.user.name]: own }, kotakSharePct, rmSplitPct });
+    const ownSalary = matchKey ? dealerSalary[matchKey] : 0;
+    return NextResponse.json({
+      monthly, kotakSharePct, rmSplitPct, incentiveMultiplier,
+      dealerSalary: { [matchKey || session.user.name]: ownSalary },
+    });
   }
 
   return NextResponse.json({ monthly, dealerMonthly, kotakSharePct, rmSplitPct, dealerSalary, incentiveMultiplier });
