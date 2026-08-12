@@ -6,8 +6,10 @@ function isoDate(y, m0, d) { return `${y}-${String(m0 + 1).padStart(2, "0")}-${S
 
 // Weekdays (Mon-Fri) in the given month, minus any admin-entered trading
 // holiday that falls in it — the denominator for each dealer's Daily Target.
-function tradingDaysInMonth(year, month0, holidaySet) {
-  const daysInMonth = new Date(year, month0 + 1, 0).getDate();
+// throughDay caps the scan at a given day-of-month instead of the month's
+// last day, to count trading days elapsed so far (for the daily average).
+function tradingDaysInMonth(year, month0, holidaySet, throughDay) {
+  const daysInMonth = throughDay ?? new Date(year, month0 + 1, 0).getDate();
   let count = 0;
   for (let d = 1; d <= daysInMonth; d++) {
     const dow = new Date(year, month0, d).getDay();
@@ -37,7 +39,10 @@ function caseInsensitiveGet(obj, key) {
 // set", kept separate from a genuine 0 so the UI renders "—" not "0x". Target
 // is derived (salary × incentiveMultiplier) rather than a separately-entered
 // figure, so it always tracks whatever counts toward incentive eligibility.
-function buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, dealerSalary, incentiveMultiplier) {
+// dailyAvgAchieved/dailyShortfall pair with dailyTarget: how much per trading
+// day has actually landed so far this month, and the gap (if any) between
+// that and the per-day pace needed to hit the full month's target.
+function buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier) {
   const agg = aggByPerson[name.toLowerCase()];
   const clientsMapped = Number(caseInsensitiveGet(mappedByDealer, name)) || 0;
   const mtdRevenue = agg?.mtd || 0;
@@ -46,12 +51,18 @@ function buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, deal
   const multiplier = hasSalary ? mtdRevenue / rawSalary : null;
   const eligible = hasSalary && multiplier >= incentiveMultiplier;
   const target = hasSalary ? rawSalary * incentiveMultiplier : 0;
+  const dailyTarget = tradingDays > 0 ? target / tradingDays : 0;
+  const dailyAvgAchieved = tradingDaysSoFar > 0 ? mtdRevenue / tradingDaysSoFar : 0;
+  const dailyShortfall = hasSalary ? Math.max(0, dailyTarget - dailyAvgAchieved) : null;
   return {
     dealer: name,
     target,
-    dailyTarget: tradingDays > 0 ? target / tradingDays : 0,
+    dailyTarget,
     tradingDaysInMonth: tradingDays,
+    tradingDaysSoFar,
     mtdRevenue,
+    dailyAvgAchieved,
+    dailyShortfall,
     yesterdayRevenue: agg?.yesterday || 0,
     clientsMapped,
     tradedClientsCount: agg?.tradedCount || 0,
@@ -98,6 +109,8 @@ export async function GET() {
   const mappedByDealer = Object.fromEntries(mappedCounts.map((r) => [r.dealer, r._count._all]));
   const holidaySet = new Set(holidays.map((h) => h.date));
   const tradingDays = tradingDaysInMonth(y, m0, holidaySet);
+  const latestDay = Number(latestDate.split("-")[2]);
+  const tradingDaysSoFar = tradingDaysInMonth(y, m0, holidaySet, latestDay);
 
   // Single pass over the month's records: person_rows is built once and read
   // twice (the revenue aggregates and the traded-clients list, via a
@@ -148,7 +161,7 @@ export async function GET() {
     return NextResponse.json({
       latestDate,
       prevDate,
-      ...buildPersonSummary(dealer, aggByPerson, mappedByDealer, tradingDays, dealerSalary, incentiveMultiplier),
+      ...buildPersonSummary(dealer, aggByPerson, mappedByDealer, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier),
     });
   }
 
@@ -162,7 +175,7 @@ export async function GET() {
   const dealerNames = dealerNameRows.map((r) => r.name);
 
   const rows = dealerNames
-    .map((name) => buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, dealerSalary, incentiveMultiplier))
+    .map((name) => buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier))
     .sort((a, b) => b.mtdRevenue - a.mtdRevenue);
 
   return NextResponse.json({ latestDate, prevDate, rows });

@@ -3182,6 +3182,19 @@ function MisSummaryCard({ data }) {
         <KPI label="Target" value={fmtINR(data.target)} tone="violet" icon={Target} />
         <KPI label="Daily Target" value={fmtINR(data.dailyTarget)} sub={`${data.tradingDaysInMonth} trading day(s) this month`} tone="gold" icon={Gauge} />
         <KPI
+          label="Daily Avg Achieved"
+          value={fmtINR(data.dailyAvgAchieved)}
+          sub={
+            data.salary == null
+              ? `Set a salary to see pace — over ${data.tradingDaysSoFar} trading day(s) so far`
+              : data.dailyShortfall === 0
+                ? `On track — needs ${fmtINR(data.dailyTarget)}/day, over ${data.tradingDaysSoFar} day(s) so far`
+                : `Short by ${fmtINR(data.dailyShortfall)}/day, over ${data.tradingDaysSoFar} day(s) so far`
+          }
+          tone={data.salary == null ? "violet" : data.dailyShortfall === 0 ? "emerald" : "red"}
+          icon={data.salary != null && data.dailyShortfall === 0 ? CheckCircle2 : AlertTriangle}
+        />
+        <KPI
           label="Till-date revenue"
           value={fmtINR(data.mtdRevenue)}
           sub={pctOfTarget !== null ? `${pctOfTarget.toFixed(0)}% of target` : "Set a target in the Targets tab"}
@@ -3296,7 +3309,7 @@ function MisAdminTable({ rows }) {
         <table>
           <thead>
             <tr>
-              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Till-date</th><th>Yesterday</th><th>Clients Mapped</th><th>Traded Clients</th><th>Salary</th><th>Multiplier</th><th>Incentive</th>
+              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Daily Avg</th><th>Pace</th><th>Till-date</th><th>Yesterday</th><th>Clients Mapped</th><th>Traded Clients</th><th>Salary</th><th>Multiplier</th><th>Incentive</th>
             </tr>
           </thead>
           <tbody>
@@ -3306,6 +3319,16 @@ function MisAdminTable({ rows }) {
                   <td><Badge text={r.dealer} color={dealerColor(r.dealer)} /></td>
                   <td>{fmtINR(r.target)}</td>
                   <td>{fmtINR(r.dailyTarget)} <span style={{ color: INK_SOFT, fontSize: 11 }}>({r.tradingDaysInMonth}d)</span></td>
+                  <td>{fmtINR(r.dailyAvgAchieved)} <span style={{ color: INK_SOFT, fontSize: 11 }}>({r.tradingDaysSoFar}d)</span></td>
+                  <td>
+                    {r.salary == null ? (
+                      <span style={{ color: INK_SOFT }}>—</span>
+                    ) : r.dailyShortfall === 0 ? (
+                      <Badge text="On track" color={EMERALD} />
+                    ) : (
+                      <Badge text={`Short ${fmtINR(r.dailyShortfall)}/day`} color={RED} />
+                    )}
+                  </td>
                   <td>{fmtINR(r.mtdRevenue)}</td>
                   <td>{fmtINR(r.yesterdayRevenue)}</td>
                   <td>{r.clientsMapped}</td>
@@ -3320,7 +3343,7 @@ function MisAdminTable({ rows }) {
               if (expanded === r.dealer) {
                 trs.push(
                   <tr key={`${r.dealer}-detail`}>
-                    <td colSpan={10} style={{ background: "#FAFBFC" }}>
+                    <td colSpan={12} style={{ background: "#FAFBFC" }}>
                       <TradedClientsList clients={r.tradedClients} />
                     </td>
                   </tr>
