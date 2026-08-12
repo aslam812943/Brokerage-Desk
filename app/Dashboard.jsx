@@ -730,7 +730,7 @@ export default function App() {
             <IndianRupee size={19} color="#fff" />
           </div>
           <div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: "#fff" }}>Sharewealth</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: "#fff" }}>Sharewealth Edge</div>
             <div style={{ fontSize: 12, color: "#A6B0C3" }}>{latestDate ? `Data through ${parseISO(latestDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}` : "No data uploaded yet"}</div>
           </div>
         </div>
@@ -751,7 +751,7 @@ export default function App() {
       </div>
 
       <div className="dt-content" style={{ padding: 22 }}>
-        {tab === "dashboard" && <Dashboard master={master} targets={targets} isAdmin={isAdmin} />}
+        {tab === "dashboard" && <Dashboard master={master} targets={targets} />}
         {tab === "mis" && <MisTab isAdmin={isAdmin} showToast={showToast} />}
         {tab === "clients" && (
           <ClientsTab
@@ -917,7 +917,7 @@ function ForcedPasswordChange({ username, onDone }) {
 // "Today's upload" detail table needs row-level data, and that's scoped to
 // one date via /api/daily/[date] (Phase 1), joined against the already-loaded
 // (small) client registry.
-function Dashboard({ master, targets, isAdmin }) {
+function Dashboard({ master, targets }) {
   const [period, setPeriod] = useState("month");
   const [todaySearch, setTodaySearch] = useState("");
   const [summary, setSummary] = useState(null);
@@ -967,7 +967,6 @@ function Dashboard({ master, targets, isAdmin }) {
   if (summary === null) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        <TasksSummaryCard isAdmin={isAdmin} />
         <Card style={{ padding: 50, textAlign: "center", color: INK_SOFT, fontSize: 13.5 }}>Loading dashboard…</Card>
       </div>
     );
@@ -975,7 +974,6 @@ function Dashboard({ master, targets, isAdmin }) {
   if (!summary.hasData) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-        <TasksSummaryCard isAdmin={isAdmin} />
         <EmptyState icon={UploadCloud} title="No data uploaded yet" text="Head to Upload to add your first day's brokerage report — the dashboard fills in automatically." />
       </div>
     );
@@ -1007,8 +1005,6 @@ function Dashboard({ master, targets, isAdmin }) {
         <KPI label={`Q${q} QTD`} value={fmtINR(kpi.qtd)} sub={quarterPct !== null ? `${quarterPct.toFixed(0)}% of implied target` : "—"} tone={quarterPct === null ? "violet" : quarterPct >= 100 ? "emerald" : quarterPct >= 60 ? "gold" : "red"} icon={TrendingUp} />
         <KPI label={`${y} YTD`} value={fmtINR(kpi.ytd)} sub={yearPct !== null ? `${yearPct.toFixed(0)}% of implied target` : "—"} tone={yearPct === null ? "violet" : yearPct >= 100 ? "emerald" : yearPct >= 60 ? "gold" : "red"} icon={Building2} />
       </div>
-
-      <TasksSummaryCard isAdmin={isAdmin} />
 
       {unmapped && unmapped.value !== 0 && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, background: GOLD_SOFT, border: `1px dashed ${GOLD}`, borderRadius: 10, padding: "10px 14px", fontSize: 13, color: "#7A5A14" }}>
@@ -1195,7 +1191,7 @@ function ClientTransactionsModal({ code, name, records, onClose }) {
 
 function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, isAdmin, onSave, showToast, onWipe }) {
   const [search, setSearch] = useState("");
-  const [period, setPeriod] = useState("all");
+  const [period, setPeriod] = useState("month");
   const [selectedClient, setSelectedClient] = useState(null);
   const [selectedClientRecords, setSelectedClientRecords] = useState([]);
   const [editingCode, setEditingCode] = useState(null);
@@ -1469,7 +1465,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
 
 function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, onRename, onRemove, onAdd, onAddBulk, onSaveTargets, onWipe, showToast }) {
   const [search, setSearch] = useState("");
-  const [period, setPeriod] = useState("all");
+  const [period, setPeriod] = useState("month");
   const [selectedClient, setSelectedClient] = useState(null);
   const [selectedClientRecords, setSelectedClientRecords] = useState([]);
   const [newDealer, setNewDealer] = useState("");
@@ -1795,7 +1791,7 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
 
 function RmsTab({ master, rmNames, isAdmin, onRename, onRemove, onAdd, onAddBulk, onWipe, showToast }) {
   const [search, setSearch] = useState("");
-  const [period, setPeriod] = useState("all");
+  const [period, setPeriod] = useState("month");
   const [netBrokerageByRm, setNetBrokerageByRm] = useState({});
   const [newRm, setNewRm] = useState("");
   const [editing, setEditing] = useState(null);
@@ -2557,53 +2553,49 @@ function MissingFinderTab({ master, dailyDates, onSaveDaily, onSaveMaster, showT
 // server-side (/api/reports/dealers) since it joins every DailyRecord in
 // the range against MasterClient, not something to reduce client-side.
 function ReportsTab({ targets, showToast }) {
-  // Defaults to "all" (matching Dealers/Clients/RMs tabs) rather than
-  // "month" — Month/Quarter/Year here bucket by real calendar time, same
-  // as those tabs' own period buttons, so if the latest upload is behind
-  // the real calendar date, "Month" can legitimately show nothing.
-  const [period, setPeriod] = useState("all");
+  const [period, setPeriod] = useState("month");
   const [useCustom, setUseCustom] = useState(false);
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [rows, setRows] = useState(null);
+  const [range, setRange] = useState({ from: null, to: null });
   const [loading, setLoading] = useState(true);
   const incentiveMultiplier = targets.incentiveMultiplier ?? 10;
-
-  const range = useMemo(() => {
-    if (useCustom) return { from: customFrom || null, to: customTo || null };
-    if (period === "all") return { from: null, to: null };
-    const now = new Date();
-    const y = now.getFullYear(), m = now.getMonth();
-    const start = period === "month" ? new Date(y, m, 1)
-      : period === "quarter" ? new Date(y, Math.floor(m / 3) * 3, 1)
-      : new Date(y, 0, 1);
-    return { from: isoDate(start), to: isoDate(now) };
-  }, [period, useCustom, customFrom, customTo]);
 
   // Salary vs. incentive-eligibility only makes sense against a complete
   // month of pay — driven by whether the actual selected range (preset OR
   // custom) spans exactly one full calendar month (1st through the real
   // last day of that month), not by which control produced it. The "Month"
-  // preset itself is "1st-to-today" (matching how Dealers/RMs/Clients tabs'
-  // own Month buttons already work), so it only qualifies once today is
+  // preset itself is resolved server-side against the latest uploaded date
+  // (not necessarily today), so it only qualifies once that upload is
   // month-end — reviewing a just-finished month needs a custom 1st-to-31st
   // range instead, and that now qualifies too.
   const isMonthlyView = isFullCalendarMonth(range.from, range.to);
 
+  // Month/Quarter/Year presets are resolved server-side relative to the
+  // latest UPLOADED date, not the real calendar date — matches the
+  // Dashboard tab, so "Month" always lands on the most recent month with
+  // real data instead of going empty when today's actual report hasn't
+  // been uploaded yet. A custom range is sent through as explicit from/to.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     (async () => {
       const qs = new URLSearchParams();
-      if (range.from) qs.set("from", range.from);
-      if (range.to) qs.set("to", range.to);
+      if (useCustom) {
+        if (customFrom) qs.set("from", customFrom);
+        if (customTo) qs.set("to", customTo);
+      } else if (period !== "all") {
+        qs.set("period", period);
+      }
       const res = await apiGetCached(`/api/reports/dealers?${qs.toString()}`);
       if (cancelled) return;
       setRows(res?.rows || []);
+      setRange({ from: res?.from ?? null, to: res?.to ?? null });
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [range.from, range.to]);
+  }, [period, useCustom, customFrom, customTo]);
 
   const rangeLabel = range.from || range.to ? `${range.from || "start"} → ${range.to || "today"}` : "All time";
 
@@ -3200,6 +3192,13 @@ function MisSummaryCard({ data }) {
         />
         <KPI label="Yesterday's revenue" value={fmtINR(data.yesterdayRevenue)} tone="ink" icon={Calendar} />
         <KPI label="Total Clients Mapped" value={data.clientsMapped} tone="teal" icon={Users} />
+        <KPI
+          label="Incentive"
+          value={data.salary == null ? "—" : data.incentiveEligible ? "Eligible" : "Not eligible"}
+          sub={data.salary == null ? "Set a salary in the Targets tab" : `${data.multiplier.toFixed(2)}x of ${fmtINR(data.salary)} salary — needs ${data.incentiveMultiplier}x`}
+          tone={data.salary == null ? "violet" : data.incentiveEligible ? "emerald" : "red"}
+          icon={ShieldCheck}
+        />
       </div>
       <Card style={{ padding: 18 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => setShowClients((v) => !v)}>
@@ -3299,7 +3298,7 @@ function MisAdminTable({ rows }) {
         <table>
           <thead>
             <tr>
-              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Till-date</th><th>Yesterday</th><th>Clients Mapped</th><th>Traded Clients</th>
+              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Till-date</th><th>Yesterday</th><th>Clients Mapped</th><th>Traded Clients</th><th>Salary</th><th>Multiplier</th><th>Incentive</th>
             </tr>
           </thead>
           <tbody>
@@ -3315,12 +3314,15 @@ function MisAdminTable({ rows }) {
                   <td style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     {r.tradedClientsCount} {expanded === r.dealer ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                   </td>
+                  <td>{r.salary != null ? fmtFull(r.salary) : "—"}</td>
+                  <td>{r.multiplier != null ? `${r.multiplier.toFixed(2)}x` : "—"}</td>
+                  <td>{r.salary == null ? <span style={{ color: INK_SOFT }}>—</span> : <Badge text={r.incentiveEligible ? "Eligible" : "Not eligible"} color={r.incentiveEligible ? EMERALD : "#9AA1AC"} />}</td>
                 </tr>,
               ];
               if (expanded === r.dealer) {
                 trs.push(
                   <tr key={`${r.dealer}-detail`}>
-                    <td colSpan={7} style={{ background: "#FAFBFC" }}>
+                    <td colSpan={10} style={{ background: "#FAFBFC" }}>
                       <TradedClientsList clients={r.tradedClients} />
                     </td>
                   </tr>
@@ -3351,15 +3353,26 @@ function MisTab({ isAdmin, showToast }) {
   const refresh = () => { invalidateReadCache(); setReloadKey((k) => k + 1); };
 
   if (data === null) {
-    return <Card style={{ padding: 50, textAlign: "center", color: INK_SOFT, fontSize: 13.5 }}>Loading MIS…</Card>;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <TasksSummaryCard isAdmin={isAdmin} />
+        <Card style={{ padding: 50, textAlign: "center", color: INK_SOFT, fontSize: 13.5 }}>Loading MIS…</Card>
+      </div>
+    );
   }
 
   if (!isAdmin) {
-    return <MisSummaryCard data={data} />;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <TasksSummaryCard isAdmin={isAdmin} />
+        <MisSummaryCard data={data} />
+      </div>
+    );
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <TasksSummaryCard isAdmin={isAdmin} />
       <HolidaysManager showToast={showToast} onChange={refresh} />
       <MisAdminTable rows={data.rows || []} />
     </div>

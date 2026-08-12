@@ -9,7 +9,7 @@ const inter = Inter({
 });
 
 export const metadata = {
-  title: "Sharewealth",
+  title: "Sharewealth Edge",
   description: "Internal brokerage dashboard",
 };
 

@@ -65,7 +65,7 @@ function LoginForm() {
         }}
       >
         <div style={{ fontSize: 18, fontWeight: 800, color: "#0E1420", marginBottom: 4 }}>
-          Sharewealth
+          Sharewealth Edge
         </div>
         <div style={{ fontSize: 13, color: "#4B5566", marginBottom: 22 }}>Sign in to continue</div>
 

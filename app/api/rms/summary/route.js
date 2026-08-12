@@ -3,8 +3,6 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../../../lib/prisma";
 import { requireSession } from "../../../../lib/apiAuth";
 
-// RmsTab (unlike the Dashboard tab) buckets by the real calendar date, not
-// the latest upload date — matches its existing client-side `new Date()`.
 function isoDate(y, m0, d) { return `${y}-${String(m0 + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
 
 export async function GET(req) {
@@ -32,16 +30,27 @@ export async function GET(req) {
   const kotakSharePct = targets?.kotakSharePct ?? 85;
   const rmSplitPct = targets?.rmSplitPct ?? 50;
 
-  const now = new Date();
-  const y = now.getFullYear(), m0 = now.getMonth();
+  const scopeSql = allowedCodeNorms?.length ? Prisma.sql`AND dr."codeNorm" IN (${Prisma.join(allowedCodeNorms)})` : Prisma.empty;
+
+  // Bucketed relative to the latest UPLOADED date, not the real calendar
+  // date — matches the Dashboard tab, so "Month" always lands on the most
+  // recent month with real data instead of going empty when today's actual
+  // report hasn't been uploaded yet.
+  let y, m0;
+  if (period !== "all") {
+    const latest = await prisma.dailyRecord.findFirst({
+      where: allowedCodeNorms?.length ? { codeNorm: { in: allowedCodeNorms } } : {},
+      orderBy: { date: "desc" },
+      select: { date: true },
+    });
+    [y, m0] = latest ? latest.date.split("-").map(Number).map((n, i) => (i === 1 ? n - 1 : n)) : [new Date().getFullYear(), new Date().getMonth()];
+  }
   const periodFilter = {
     all: Prisma.empty,
     month: Prisma.sql`AND dr.date >= ${isoDate(y, m0, 1)}`,
     quarter: Prisma.sql`AND dr.date >= ${isoDate(y, Math.floor(m0 / 3) * 3, 1)}`,
     year: Prisma.sql`AND dr.date >= ${isoDate(y, 0, 1)}`,
   }[period];
-
-  const scopeSql = allowedCodeNorms?.length ? Prisma.sql`AND dr."codeNorm" IN (${Prisma.join(allowedCodeNorms)})` : Prisma.empty;
 
   // Each RM's Net Brokerage is their share of every client mapped to them —
   // same splitShares() math as the Dealers tab's split table, just grouped

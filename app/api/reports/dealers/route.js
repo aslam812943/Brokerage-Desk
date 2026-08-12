@@ -4,6 +4,7 @@ import { prisma } from "../../../../lib/prisma";
 import { requireAdmin } from "../../../../lib/apiAuth";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function isoDate(y, m0, d) { return `${y}-${String(m0 + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
 
 // Per-dealer report for an arbitrary date range: clients currently mapped to
 // the dealer (independent of the range), how many of them actually traded
@@ -15,10 +16,28 @@ export async function GET(req) {
   if (response) return response;
 
   const { searchParams } = new URL(req.url);
-  const from = searchParams.get("from");
-  const to = searchParams.get("to");
+  let from = searchParams.get("from");
+  let to = searchParams.get("to");
   if (from && !ISO_DATE.test(from)) return NextResponse.json({ error: "Invalid 'from' date" }, { status: 400 });
   if (to && !ISO_DATE.test(to)) return NextResponse.json({ error: "Invalid 'to' date" }, { status: 400 });
+
+  // A preset period (month/quarter/year) is resolved here relative to the
+  // latest UPLOADED date, not the real calendar date — matches the Dashboard
+  // tab, so "Month" always lands on the most recent month with real data
+  // instead of going empty when today's actual report hasn't been uploaded
+  // yet. Ignored once an explicit custom from/to is supplied.
+  const period = searchParams.get("period");
+  if (!from && !to && period && period !== "all") {
+    if (!["month", "quarter", "year"].includes(period)) {
+      return NextResponse.json({ error: "Invalid period" }, { status: 400 });
+    }
+    const latest = await prisma.dailyRecord.findFirst({ orderBy: { date: "desc" }, select: { date: true } });
+    const [y, m0] = latest
+      ? latest.date.split("-").map(Number).map((n, i) => (i === 1 ? n - 1 : n))
+      : [new Date().getFullYear(), new Date().getMonth()];
+    from = period === "month" ? isoDate(y, m0, 1) : period === "quarter" ? isoDate(y, Math.floor(m0 / 3) * 3, 1) : isoDate(y, 0, 1);
+    to = latest?.date ?? isoDate(y, m0, 1);
+  }
 
   const targets = await prisma.targets.findUnique({ where: { id: 1 } });
   const kotakSharePct = targets?.kotakSharePct ?? 85;

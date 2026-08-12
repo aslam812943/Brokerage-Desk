@@ -33,18 +33,27 @@ export async function GET(req) {
 
   const targets = await prisma.targets.findUnique({ where: { id: 1 } });
   const kotakSharePct = targets?.kotakSharePct ?? 85;
+  const scopeSql = allowedCodeNorms?.length ? Prisma.sql`AND "codeNorm" IN (${Prisma.join(allowedCodeNorms)})` : Prisma.empty;
 
-  // Same real-calendar-date bucketing the Dealers/RMs tabs already use
-  // (unlike the Dashboard tab, which buckets relative to the latest upload).
-  const now = new Date();
-  const y = now.getFullYear(), m0 = now.getMonth();
+  // Bucketed relative to the latest UPLOADED date, not the real calendar
+  // date — matches the Dashboard tab, so "Month" always lands on the most
+  // recent month with real data instead of going empty when today's actual
+  // report hasn't been uploaded yet.
+  let y, m0;
+  if (period !== "all") {
+    const latest = await prisma.dailyRecord.findFirst({
+      where: allowedCodeNorms?.length ? { codeNorm: { in: allowedCodeNorms } } : {},
+      orderBy: { date: "desc" },
+      select: { date: true },
+    });
+    [y, m0] = latest ? latest.date.split("-").map(Number).map((n, i) => (i === 1 ? n - 1 : n)) : [new Date().getFullYear(), new Date().getMonth()];
+  }
   const periodFilter = {
     all: Prisma.empty,
     month: Prisma.sql`AND date >= ${isoDate(y, m0, 1)}`,
     quarter: Prisma.sql`AND date >= ${isoDate(y, Math.floor(m0 / 3) * 3, 1)}`,
     year: Prisma.sql`AND date >= ${isoDate(y, 0, 1)}`,
   }[period];
-  const scopeSql = allowedCodeNorms?.length ? Prisma.sql`AND "codeNorm" IN (${Prisma.join(allowedCodeNorms)})` : Prisma.empty;
 
   const rows = await prisma.$queryRaw`
     SELECT "codeNorm" AS code, SUM(
