@@ -52,22 +52,32 @@ export async function GET(req) {
     prisma.dealer.findMany({ select: { name: true } }),
     prisma.masterClient.groupBy({ by: ["dealer"], where: { dealer: { not: "" } }, _count: { _all: true } }),
     prisma.$queryRaw`
+      -- Per-client sums first (grouped by dealer/codeNorm/rm) so "traded"
+      -- can require a nonzero net brokerage for the range, same fix as the
+      -- MIS traded-client count — a client can have a DailyRecord row in
+      -- range with brokerage summing to exactly 0, which shouldn't count
+      -- as having traded. totalBrokerage/netBrokerage sums are unchanged.
+      WITH per_client AS (
+        SELECT m.dealer AS dealer, dr."codeNorm" AS "codeNorm", m.rm AS rm,
+               SUM(CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS client_amt
+        FROM "DailyRecord" dr
+        JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
+        WHERE m.dealer <> '' ${dateFilter}
+        GROUP BY m.dealer, dr."codeNorm", m.rm
+      )
       SELECT
-        m.dealer AS dealer,
-        COUNT(DISTINCT dr."codeNorm")::int AS "tradedClients",
-        COALESCE(SUM(CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END), 0)::float8 AS "totalBrokerage",
+        dealer,
+        COUNT(*) FILTER (WHERE client_amt <> 0)::int AS "tradedClients",
+        COALESCE(SUM(client_amt), 0)::float8 AS "totalBrokerage",
         COALESCE(SUM(
-          (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END)
-          * (CASE
-              WHEN COALESCE(m.rm, '') = '' THEN 100
-              WHEN lower(m.dealer) = lower(m.rm) THEN 100
+          client_amt * (CASE
+              WHEN COALESCE(rm, '') = '' THEN 100
+              WHEN lower(dealer) = lower(rm) THEN 100
               ELSE 100 - ${rmSplitPct}::float8
             END) / 100.0
         ), 0)::float8 AS "netBrokerage"
-      FROM "DailyRecord" dr
-      JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
-      WHERE m.dealer <> '' ${dateFilter}
-      GROUP BY m.dealer
+      FROM per_client
+      GROUP BY dealer
     `,
   ]);
 
