@@ -48,7 +48,22 @@ export async function GET(req) {
     ${to ? Prisma.sql`AND dr.date <= ${to}` : Prisma.empty}
   `;
 
-  const [registryDealers, mappedCounts, tradedRows] = await Promise.all([
+  // Month-over-month comparison (previous month vs. this range, plus a
+  // dormant-client follow-up list) only makes sense when the range starts
+  // on the 1st of a month — the "Month" preset always resolves that way,
+  // and so does any custom range the admin deliberately starts on the 1st.
+  // `to` doesn't need to reach month-end (a partial "month so far" range
+  // still has a well-defined previous month to compare against).
+  const showMonthComparison = !!(from && to && from.split("-")[2] === "01");
+  let prevMonthStart = null;
+  if (showMonthComparison) {
+    const [fy, fm0] = from.split("-").map(Number).map((n, i) => (i === 1 ? n - 1 : n));
+    const prevM0 = fm0 === 0 ? 11 : fm0 - 1;
+    const prevY = fm0 === 0 ? fy - 1 : fy;
+    prevMonthStart = isoDate(prevY, prevM0, 1);
+  }
+
+  const [registryDealers, mappedCounts, tradedRows, comparisonRows] = await Promise.all([
     prisma.dealer.findMany({ select: { name: true } }),
     prisma.masterClient.groupBy({ by: ["dealer"], where: { dealer: { not: "" } }, _count: { _all: true } }),
     prisma.$queryRaw`
@@ -79,10 +94,61 @@ export async function GET(req) {
       FROM per_client
       GROUP BY dealer
     `,
+    showMonthComparison
+      ? prisma.$queryRaw`
+          -- Previous-month figures + a dormant-client list (traded last
+          -- month, not yet in this range) — "traded" identity here matches
+          -- tradedClients above: raw per-client brokerage nonzero, before
+          -- the RM split. Scans back to prevMonthStart in one pass, tagged
+          -- by period, instead of a second full table scan.
+          WITH records AS (
+            SELECT dr.date, dr."codeNorm" AS "codeNorm", dr.code, dr.name, m.dealer AS dealer, m.rm AS rm,
+                   (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS "netRaw",
+                   (CASE WHEN dr.date >= ${from} THEN 'current' ELSE 'previous' END) AS period
+            FROM "DailyRecord" dr
+            JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
+            WHERE m.dealer <> '' AND dr.date >= ${prevMonthStart} AND dr.date <= ${to}
+          ),
+          per_client AS (
+            SELECT dealer, period, "codeNorm", MAX(code) AS code, MAX(name) AS name, rm,
+                   SUM("netRaw") AS client_amt
+            FROM records
+            GROUP BY dealer, period, "codeNorm", rm
+          )
+          SELECT dealer,
+                 (SELECT COUNT(*) FROM per_client pc WHERE pc.dealer = base.dealer AND pc.period = 'previous' AND pc.client_amt <> 0)::int AS "prevTradedClients",
+                 (SELECT COALESCE(SUM(pc.client_amt), 0) FROM per_client pc WHERE pc.dealer = base.dealer AND pc.period = 'previous')::float8 AS "prevTotalBrokerage",
+                 (
+                   SELECT COALESCE(SUM(pc.client_amt * (CASE WHEN COALESCE(pc.rm, '') = '' THEN 100 WHEN lower(pc.dealer) = lower(pc.rm) THEN 100 ELSE 100 - ${rmSplitPct}::float8 END) / 100.0), 0)
+                   FROM per_client pc WHERE pc.dealer = base.dealer AND pc.period = 'previous'
+                 )::float8 AS "prevNetBrokerage",
+                 (
+                   SELECT COUNT(*) FROM per_client pcPrev
+                   WHERE pcPrev.dealer = base.dealer AND pcPrev.period = 'previous' AND pcPrev.client_amt <> 0
+                     AND NOT EXISTS (
+                       SELECT 1 FROM per_client pcCurr
+                       WHERE pcCurr.dealer = pcPrev.dealer AND pcCurr."codeNorm" = pcPrev."codeNorm"
+                         AND pcCurr.period = 'current' AND pcCurr.client_amt <> 0
+                     )
+                 )::int AS "dormantCount",
+                 (
+                   SELECT jsonb_agg(jsonb_build_object('code', pcPrev.code, 'name', pcPrev.name, 'lastMonthNetBrokerage', ROUND(pcPrev.client_amt::numeric, 2)) ORDER BY pcPrev.client_amt DESC)
+                   FROM per_client pcPrev
+                   WHERE pcPrev.dealer = base.dealer AND pcPrev.period = 'previous' AND pcPrev.client_amt <> 0
+                     AND NOT EXISTS (
+                       SELECT 1 FROM per_client pcCurr
+                       WHERE pcCurr.dealer = pcPrev.dealer AND pcCurr."codeNorm" = pcPrev."codeNorm"
+                         AND pcCurr.period = 'current' AND pcCurr.client_amt <> 0
+                     )
+                 ) AS "dormantClients"
+          FROM (SELECT DISTINCT dealer FROM per_client) base
+        `
+      : Promise.resolve([]),
   ]);
 
   const mappedByDealer = Object.fromEntries(mappedCounts.map((r) => [r.dealer, r._count._all]));
   const tradedByDealer = Object.fromEntries(tradedRows.map((r) => [r.dealer, r]));
+  const comparisonByDealer = Object.fromEntries(comparisonRows.map((r) => [r.dealer, r]));
 
   const dealerNames = new Set([
     ...registryDealers.map((d) => d.name),
@@ -90,13 +156,23 @@ export async function GET(req) {
     ...Object.keys(tradedByDealer),
   ]);
 
-  const rows = Array.from(dealerNames).map((dealer) => ({
-    dealer,
-    clientsMapped: mappedByDealer[dealer] || 0,
-    tradedClients: tradedByDealer[dealer]?.tradedClients || 0,
-    totalBrokerage: tradedByDealer[dealer]?.totalBrokerage || 0,
-    netBrokerage: tradedByDealer[dealer]?.netBrokerage || 0,
-  })).sort((a, b) => b.totalBrokerage - a.totalBrokerage);
+  const rows = Array.from(dealerNames).map((dealer) => {
+    const cmp = comparisonByDealer[dealer];
+    return {
+      dealer,
+      clientsMapped: mappedByDealer[dealer] || 0,
+      tradedClients: tradedByDealer[dealer]?.tradedClients || 0,
+      totalBrokerage: tradedByDealer[dealer]?.totalBrokerage || 0,
+      netBrokerage: tradedByDealer[dealer]?.netBrokerage || 0,
+      ...(showMonthComparison ? {
+        prevTradedClients: cmp?.prevTradedClients || 0,
+        prevTotalBrokerage: cmp?.prevTotalBrokerage || 0,
+        prevNetBrokerage: cmp?.prevNetBrokerage || 0,
+        dormantClientsCount: cmp?.dormantCount || 0,
+        dormantClients: cmp?.dormantClients || [],
+      } : {}),
+    };
+  }).sort((a, b) => b.totalBrokerage - a.totalBrokerage);
 
-  return NextResponse.json({ from: from || null, to: to || null, rows });
+  return NextResponse.json({ from: from || null, to: to || null, monthComparison: showMonthComparison, rows });
 }

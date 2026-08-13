@@ -2631,6 +2631,8 @@ function ReportsTab({ targets, showToast }) {
   const [customTo, setCustomTo] = useState("");
   const [rows, setRows] = useState(null);
   const [range, setRange] = useState({ from: null, to: null });
+  const [monthComparison, setMonthComparison] = useState(false);
+  const [expandedDealer, setExpandedDealer] = useState(null);
   const [loading, setLoading] = useState(true);
   const incentiveMultiplier = targets.incentiveMultiplier ?? 10;
 
@@ -2664,6 +2666,8 @@ function ReportsTab({ targets, showToast }) {
       if (cancelled) return;
       setRows(res?.rows || []);
       setRange({ from: res?.from ?? null, to: res?.to ?? null });
+      setMonthComparison(!!res?.monthComparison);
+      setExpandedDealer(null);
       setLoading(false);
     })();
     return () => { cancelled = true; };
@@ -2778,14 +2782,25 @@ function ReportsTab({ targets, showToast }) {
                   <tr>
                     <th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th>Total Brokerage</th><th>Net Brokerage</th>
                     {isMonthlyView && <><th>Salary</th><th>Multiplier</th><th>Incentive</th></>}
+                    {monthComparison && <th>vs Last Month</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {(rows || []).map((r) => {
+                  {(rows || []).flatMap((r) => {
                     const { salary, multiplier, eligible } = isMonthlyView ? incentiveFor(r) : {};
-                    return (
-                      <tr key={r.dealer}>
-                        <td style={{ fontWeight: 600 }}>{r.dealer}</td>
+                    const pctChange = monthComparison && r.prevNetBrokerage ? ((r.netBrokerage - r.prevNetBrokerage) / r.prevNetBrokerage) * 100 : null;
+                    const isNew = monthComparison && !r.prevNetBrokerage && r.netBrokerage > 0;
+                    const isExpanded = expandedDealer === r.dealer;
+                    const out = [
+                      <tr
+                        key={r.dealer}
+                        onClick={monthComparison ? () => setExpandedDealer(isExpanded ? null : r.dealer) : undefined}
+                        style={monthComparison ? { cursor: "pointer" } : undefined}
+                      >
+                        <td style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                          {r.dealer}
+                          {monthComparison && (isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />)}
+                        </td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.clientsMapped}</td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.tradedClients}</td>
                         <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.totalBrokerage)}</td>
@@ -2797,11 +2812,58 @@ function ReportsTab({ targets, showToast }) {
                             <td>{salary == null ? <span style={{ color: INK_SOFT }}>—</span> : <Badge text={eligible ? "Eligible" : "Not eligible"} color={eligible ? EMERALD : "#9AA1AC"} />}</td>
                           </>
                         )}
-                      </tr>
-                    );
+                        {monthComparison && (
+                          <td>
+                            {isNew ? (
+                              <Badge text="New" color={BLUE} />
+                            ) : pctChange == null ? (
+                              <span style={{ color: INK_SOFT }}>—</span>
+                            ) : (
+                              <Badge text={`${pctChange >= 0 ? "+" : ""}${pctChange.toFixed(1)}%`} color={pctChange >= 0 ? EMERALD : RED} />
+                            )}
+                          </td>
+                        )}
+                      </tr>,
+                    ];
+                    if (isExpanded && monthComparison) {
+                      const { salary: expSalary, multiplier: expMultiplier, eligible: expEligible } = incentiveFor(r);
+                      out.push(
+                        <tr key={`${r.dealer}-detail`}>
+                          <td colSpan={6 + (isMonthlyView ? 3 : 0)} style={{ background: "#FAFBFC" }}>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, padding: "10px 4px" }}>
+                              <KPI label="Prev Month Brokerage" value={fmtINR(r.prevNetBrokerage)} tone="ink" icon={Calendar} />
+                              <KPI label="Prev Month Traded Clients" value={r.prevTradedClients} tone="violet" icon={Users} />
+                              <KPI label="This Month Traded Clients" value={r.tradedClients} tone="teal" icon={Users} />
+                              <KPI
+                                label="Brokerage Change"
+                                value={isNew ? "New" : pctChange == null ? "—" : `${pctChange >= 0 ? "+" : ""}${pctChange.toFixed(1)}%`}
+                                sub={pctChange == null ? undefined : `${fmtINR(r.prevNetBrokerage)} → ${fmtINR(r.netBrokerage)}`}
+                                tone={isNew || (pctChange != null && pctChange >= 0) ? "emerald" : pctChange == null ? "ink" : "red"}
+                                icon={TrendingUp}
+                              />
+                              <KPI label="Dormant Clients This Month" value={r.dormantClientsCount} sub="Traded last month, not yet this month" tone={r.dormantClientsCount > 0 ? "red" : "emerald"} icon={AlertTriangle} />
+                              <KPI
+                                label="Incentive"
+                                value={expSalary == null ? "—" : expEligible ? "Eligible" : "Not eligible"}
+                                sub={expSalary == null ? "Set a salary in the Targets tab" : `${expMultiplier.toFixed(2)}x of ${fmtINR(expSalary)} salary`}
+                                tone={expSalary == null ? "violet" : expEligible ? "emerald" : "red"}
+                                icon={ShieldCheck}
+                              />
+                            </div>
+                            {r.dormantClientsCount > 0 && (
+                              <div style={{ marginTop: 4 }}>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: INK_SOFT, margin: "4px 2px" }}>Follow-up: traded last month, not yet this month</div>
+                                <DormantClientsList clients={r.dormantClients} />
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    }
+                    return out;
                   })}
                   {(!rows || rows.length === 0) && (
-                    <tr><td colSpan={isMonthlyView ? 8 : 5} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
+                    <tr><td colSpan={5 + (isMonthlyView ? 3 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
                   )}
                 </tbody>
                 {rows && rows.length > 0 && (
@@ -2813,6 +2875,7 @@ function ReportsTab({ targets, showToast }) {
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.totalBrokerage)}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.netBrokerage)}</td>
                       {isMonthlyView && <><td></td><td></td><td></td></>}
+                      {monthComparison && <td></td>}
                     </tr>
                   </tfoot>
                 )}
