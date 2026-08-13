@@ -67,6 +67,8 @@ function buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, trad
     clientsMapped,
     tradedClientsCount: agg?.tradedCount || 0,
     tradedClients: agg?.tradedClients || [],
+    dormantClientsCount: agg?.dormantCount || 0,
+    dormantClients: agg?.dormantClients || [],
     salary: hasSalary ? rawSalary : null,
     incentiveMultiplier,
     multiplier,
@@ -101,6 +103,9 @@ export async function GET() {
 
   const [y, m0] = latestDate.split("-").map(Number).map((n, i) => (i === 1 ? n - 1 : n));
   const mStart = isoDate(y, m0, 1);
+  const prevM0 = m0 === 0 ? 11 : m0 - 1;
+  const prevY = m0 === 0 ? y - 1 : y;
+  const prevMonthStart = isoDate(prevY, prevM0, 1);
 
   const kotakSharePct = targetsRow?.kotakSharePct ?? 85;
   const rmSplitPct = targetsRow?.rmSplitPct ?? 50;
@@ -119,13 +124,17 @@ export async function GET() {
   // from scratch over the same month-wide join.
   const personRows = await prisma.$queryRaw`
     WITH records AS (
+      -- Scans back to the start of the *previous* month (not just this
+      -- month) in one pass, tagged by period — the previous-month side
+      -- feeds the dormant-client check below without a second table scan.
       SELECT dr.date, dr."codeNorm" AS "codeNorm", dr.code, dr.name,
              COALESCE(NULLIF(m.dealer, ''), '') AS dealer,
              COALESCE(NULLIF(m.rm, ''), '') AS rm,
-             (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS "netRaw"
+             (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS "netRaw",
+             (CASE WHEN dr.date >= ${mStart} THEN 'current' ELSE 'previous' END) AS period
       FROM "DailyRecord" dr
       LEFT JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
-      WHERE dr.date >= ${mStart} AND dr.date <= ${latestDate}
+      WHERE dr.date >= ${prevMonthStart} AND dr.date <= ${latestDate}
     ),
     split AS (
       SELECT *,
@@ -134,25 +143,26 @@ export async function GET() {
       FROM records
     ),
     person_rows AS (
-      SELECT dealer AS person, date, "codeNorm", code, name, "netRaw" * "dealerPct" / 100.0 AS amt, 'dealer' AS role FROM split WHERE dealer <> ''
+      SELECT dealer AS person, date, period, "codeNorm", code, name, "netRaw" * "dealerPct" / 100.0 AS amt, 'dealer' AS role FROM split WHERE dealer <> ''
       UNION ALL
-      SELECT rm AS person, date, "codeNorm", code, name, "netRaw" * "rmPct" / 100.0 AS amt, 'rm' AS role FROM split WHERE rm <> '' AND lower(rm) <> lower(dealer)
+      SELECT rm AS person, date, period, "codeNorm", code, name, "netRaw" * "rmPct" / 100.0 AS amt, 'rm' AS role FROM split WHERE rm <> '' AND lower(rm) <> lower(dealer)
     ),
     per_client AS (
       -- Grouped/counted by codeNorm, not the raw uploaded code — the same
       -- client can appear with different code casing across upload dates
       -- (e.g. "XV7I3" vs "XV7i3"), which previously double-counted them as
       -- two distinct traded clients. code/name here are just a display
-      -- pick, not the identity key.
-      SELECT person, "codeNorm", MAX(code) AS code, MAX(name) AS name, role, SUM(amt) AS client_amt
+      -- pick, not the identity key. Grouped per period too, so the same
+      -- client's current- and previous-month totals stay separate.
+      SELECT person, period, "codeNorm", MAX(code) AS code, MAX(name) AS name, role, SUM(amt) AS client_amt
       FROM person_rows
-      GROUP BY person, "codeNorm", role
+      GROUP BY person, period, "codeNorm", role
     )
     SELECT pr.person,
-           COALESCE(SUM(pr.amt), 0)::float8 AS mtd,
-           COALESCE(SUM(pr.amt) FILTER (WHERE pr.date = ${prevDate ?? ""}), 0)::float8 AS yesterday,
+           COALESCE(SUM(pr.amt) FILTER (WHERE pr.period = 'current'), 0)::float8 AS mtd,
+           COALESCE(SUM(pr.amt) FILTER (WHERE pr.period = 'current' AND pr.date = ${prevDate ?? ""}), 0)::float8 AS yesterday,
            (
-             SELECT COUNT(*) FROM per_client pc WHERE pc.person = pr.person AND pc.client_amt <> 0
+             SELECT COUNT(*) FROM per_client pc WHERE pc.person = pr.person AND pc.period = 'current' AND pc.client_amt <> 0
            )::int AS "tradedCount",
            (
              -- Only clients with nonzero net brokerage count as "traded" — a
@@ -160,8 +170,31 @@ export async function GET() {
              -- brokerage that sums to exactly 0 (e.g. offsetting entries),
              -- which shouldn't inflate the traded-client count/list.
              SELECT jsonb_agg(jsonb_build_object('code', pc.code, 'name', pc.name, 'role', pc.role, 'netBrokerage', ROUND(pc.client_amt::numeric, 2)) ORDER BY pc.code)
-             FROM per_client pc WHERE pc.person = pr.person AND pc.client_amt <> 0
-           ) AS "tradedClients"
+             FROM per_client pc WHERE pc.person = pr.person AND pc.period = 'current' AND pc.client_amt <> 0
+           ) AS "tradedClients",
+           (
+             -- Dormant = traded (nonzero) last month but hasn't traded
+             -- (nonzero) yet this month — a follow-up/call list, matched by
+             -- codeNorm only (not role), since a client's dealer/RM mapping
+             -- can change between the two periods.
+             SELECT COUNT(*) FROM per_client pcPrev
+             WHERE pcPrev.person = pr.person AND pcPrev.period = 'previous' AND pcPrev.client_amt <> 0
+               AND NOT EXISTS (
+                 SELECT 1 FROM per_client pcCurr
+                 WHERE pcCurr.person = pcPrev.person AND pcCurr."codeNorm" = pcPrev."codeNorm"
+                   AND pcCurr.period = 'current' AND pcCurr.client_amt <> 0
+               )
+           )::int AS "dormantCount",
+           (
+             SELECT jsonb_agg(jsonb_build_object('code', pcPrev.code, 'name', pcPrev.name, 'role', pcPrev.role, 'lastMonthNetBrokerage', ROUND(pcPrev.client_amt::numeric, 2)) ORDER BY pcPrev.client_amt DESC)
+             FROM per_client pcPrev
+             WHERE pcPrev.person = pr.person AND pcPrev.period = 'previous' AND pcPrev.client_amt <> 0
+               AND NOT EXISTS (
+                 SELECT 1 FROM per_client pcCurr
+                 WHERE pcCurr.person = pcPrev.person AND pcCurr."codeNorm" = pcPrev."codeNorm"
+                   AND pcCurr.period = 'current' AND pcCurr.client_amt <> 0
+               )
+           ) AS "dormantClients"
     FROM person_rows pr
     GROUP BY pr.person
   `;
@@ -172,6 +205,7 @@ export async function GET() {
     return NextResponse.json({
       latestDate,
       prevDate,
+      prevMonthStart,
       ...buildPersonSummary(dealer, aggByPerson, mappedByDealer, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier),
     });
   }
@@ -189,5 +223,5 @@ export async function GET() {
     .map((name) => buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier))
     .sort((a, b) => b.mtdRevenue - a.mtdRevenue);
 
-  return NextResponse.json({ latestDate, prevDate, rows });
+  return NextResponse.json({ latestDate, prevDate, prevMonthStart, rows });
 }

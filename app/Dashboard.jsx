@@ -3170,9 +3170,31 @@ function TradedClientsList({ clients }) {
   );
 }
 
+// Clients who had nonzero net brokerage last month but haven't traded yet
+// this month — a follow-up/call list, ranked by last month's brokerage so
+// the biggest-value dormant clients surface first.
+function DormantClientsList({ clients }) {
+  if (!clients?.length) return <div style={{ fontSize: 12.5, color: "#B7BCC5", padding: "8px 4px" }}>No dormant clients — everyone who traded last month has traded again this month.</div>;
+  return (
+    <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6, padding: 2 }}>
+      {clients.map((c) => (
+        <div key={c.code} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "7px 10px", borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12.5 }}>
+          <span><strong style={{ color: INK }}>{c.code}</strong> <span style={{ color: INK_SOFT }}>{c.name}</span></span>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontVariantNumeric: "tabular-nums", color: INK_SOFT }}>{fmtINR(c.lastMonthNetBrokerage)} last month</span>
+            <Badge text={c.role === "rm" ? "RM" : "Dealer"} color={c.role === "rm" ? ROSE : VIOLET} />
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MisSummaryCard({ data }) {
   const [showClients, setShowClients] = useState(false);
+  const [showDormant, setShowDormant] = useState(false);
   const monthLabel = data.latestDate ? `${MONTH_NAMES[parseISO(data.latestDate).getMonth()]} ${parseISO(data.latestDate).getFullYear()}` : "";
+  const prevMonthLabel = data.prevMonthStart ? `${MONTH_NAMES[parseISO(data.prevMonthStart).getMonth()]} ${parseISO(data.prevMonthStart).getFullYear()}` : "last month";
   const pctOfTarget = data.target > 0 ? (data.mtdRevenue / data.target) * 100 : null;
 
   return (
@@ -3220,6 +3242,13 @@ function MisSummaryCard({ data }) {
           {showClients ? <ChevronUp size={16} color={INK_SOFT} /> : <ChevronDown size={16} color={INK_SOFT} />}
         </div>
         {showClients && <div style={{ marginTop: 10 }}><TradedClientsList clients={data.tradedClients} /></div>}
+      </Card>
+      <Card style={{ padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => setShowDormant((v) => !v)}>
+          <SectionTitle>Follow-up: traded in {prevMonthLabel}, not yet in {monthLabel} ({data.dormantClientsCount})</SectionTitle>
+          {showDormant ? <ChevronUp size={16} color={INK_SOFT} /> : <ChevronDown size={16} color={INK_SOFT} />}
+        </div>
+        {showDormant && <div style={{ marginTop: 10 }}><DormantClientsList clients={data.dormantClients} /></div>}
       </Card>
     </div>
   );
@@ -3303,8 +3332,10 @@ function HolidaysManager({ showToast, onChange }) {
   );
 }
 
-function MisAdminTable({ rows }) {
+function MisAdminTable({ rows, latestDate, prevMonthStart }) {
   const [expanded, setExpanded] = useState(null);
+  const monthLabel = latestDate ? `${MONTH_NAMES[parseISO(latestDate).getMonth()]} ${parseISO(latestDate).getFullYear()}` : "this month";
+  const prevMonthLabel = prevMonthStart ? `${MONTH_NAMES[parseISO(prevMonthStart).getMonth()]} ${parseISO(prevMonthStart).getFullYear()}` : "last month";
   return (
     <Card style={{ padding: 18 }}>
       <SectionTitle>All dealers — MIS summary</SectionTitle>
@@ -3312,7 +3343,7 @@ function MisAdminTable({ rows }) {
         <table>
           <thead>
             <tr>
-              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Daily Avg</th><th>Pace</th><th>Till-date</th><th>Yesterday</th><th>Clients Mapped</th><th>Traded Clients</th><th>Salary</th><th>Multiplier</th><th>Incentive</th>
+              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Daily Avg</th><th>Pace</th><th>Till-date</th><th>Yesterday</th><th>Clients Mapped</th><th>Traded Clients</th><th>Dormant</th><th>Salary</th><th>Multiplier</th><th>Incentive</th>
             </tr>
           </thead>
           <tbody>
@@ -3338,6 +3369,7 @@ function MisAdminTable({ rows }) {
                   <td style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     {r.tradedClientsCount} {expanded === r.dealer ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                   </td>
+                  <td>{r.dormantClientsCount > 0 ? <Badge text={r.dormantClientsCount} color={RED} /> : <span style={{ color: INK_SOFT }}>0</span>}</td>
                   <td>{r.salary != null ? fmtFull(r.salary) : "—"}</td>
                   <td>{r.multiplier != null ? `${r.multiplier.toFixed(2)}x` : "—"}</td>
                   <td>{r.salary == null ? <span style={{ color: INK_SOFT }}>—</span> : <Badge text={r.incentiveEligible ? "Eligible" : "Not eligible"} color={r.incentiveEligible ? EMERALD : "#9AA1AC"} />}</td>
@@ -3346,8 +3378,11 @@ function MisAdminTable({ rows }) {
               if (expanded === r.dealer) {
                 trs.push(
                   <tr key={`${r.dealer}-detail`}>
-                    <td colSpan={12} style={{ background: "#FAFBFC" }}>
+                    <td colSpan={13} style={{ background: "#FAFBFC" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: INK_SOFT, margin: "4px 2px" }}>Traded in {monthLabel}</div>
                       <TradedClientsList clients={r.tradedClients} />
+                      <div style={{ fontSize: 12, fontWeight: 700, color: INK_SOFT, margin: "12px 2px 4px" }}>Traded in {prevMonthLabel}, not yet in {monthLabel} — follow up</div>
+                      <DormantClientsList clients={r.dormantClients} />
                     </td>
                   </tr>
                 );
@@ -3398,7 +3433,7 @@ function MisTab({ isAdmin, showToast }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <TasksSummaryCard isAdmin={isAdmin} />
       <HolidaysManager showToast={showToast} onChange={refresh} />
-      <MisAdminTable rows={data.rows || []} />
+      <MisAdminTable rows={data.rows || []} latestDate={data.latestDate} prevMonthStart={data.prevMonthStart} />
     </div>
   );
 }
