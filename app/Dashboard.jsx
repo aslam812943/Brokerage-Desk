@@ -1285,6 +1285,28 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
     setBulkOpen(false);
   };
 
+  // Exports every row matching the current search/period, not just the
+  // 500 rendered in the table — same xlsx pattern as exportDealerClients
+  // on the Dealers tab.
+  const exportClients = () => {
+    if (!sorted.length) { showToast("No clients to export", "gold"); return; }
+    const exportRows = sorted.map((r) => ({
+      "Client Code": r.code,
+      "Client Name": r.name,
+      "Dealer": r.dealer || "",
+      "RM": r.rm || "",
+      "Branch": r.branch || "",
+      "Brokerage": Math.round(r.brokerage * 100) / 100,
+      "Debit Balance": Math.round(r.debit * 100) / 100,
+    }));
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Clients");
+    const searchPart = search ? `_${search.replace(/[^a-z0-9]+/gi, "_")}` : "";
+    XLSX.writeFile(wb, `clients_${period}${searchPart}.xlsx`);
+    showToast(`Exported ${exportRows.length} client(s)`);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
@@ -1307,6 +1329,9 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
               </button>
               <button onClick={() => { setBulkOpen((o) => !o); setBulkPending(null); }} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: `1px solid ${TEAL}`, background: bulkOpen ? TEAL_SOFT : "#fff", color: TEAL, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
                 <UploadCloud size={15} /> Bulk upload
+              </button>
+              <button onClick={exportClients} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                <Download size={15} /> Export
               </button>
             </div>
           )}
