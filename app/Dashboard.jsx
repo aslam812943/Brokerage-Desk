@@ -1192,6 +1192,16 @@ function ClientTransactionsModal({ code, name, records, onClose }) {
   );
 }
 
+const EXPORT_COLUMNS = [
+  { key: "code", label: "Client Code" },
+  { key: "name", label: "Client Name" },
+  { key: "dealer", label: "Dealer" },
+  { key: "rm", label: "RM" },
+  { key: "branch", label: "Branch" },
+  { key: "brokerage", label: "Brokerage" },
+  { key: "debit", label: "Debit Balance" },
+];
+
 function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, isAdmin, onSave, showToast, onWipe }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("month");
@@ -1203,6 +1213,8 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   const [draft, setDraft] = useState({ code: "", name: "", dealer: "", rm: "", branch: "" });
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkPending, setBulkPending] = useState(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportCols, setExportCols] = useState(Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, true])));
   const [brokerageByCode, setBrokerageByCode] = useState({});
   const bulkFileRef = useRef(null);
   const kotakShare = (targets.kotakSharePct ?? 85) / 100;
@@ -1287,24 +1299,32 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
 
   // Exports every row matching the current search/period, not just the
   // 500 rendered in the table — same xlsx pattern as exportDealerClients
-  // on the Dealers tab.
+  // on the Dealers tab. Only the columns checked in exportCols are
+  // included, in EXPORT_COLUMNS order regardless of check order.
   const exportClients = () => {
     if (!sorted.length) { showToast("No clients to export", "gold"); return; }
-    const exportRows = sorted.map((r) => ({
-      "Client Code": r.code,
-      "Client Name": r.name,
-      "Dealer": r.dealer || "",
-      "RM": r.rm || "",
-      "Branch": r.branch || "",
-      "Brokerage": Math.round(r.brokerage * 100) / 100,
-      "Debit Balance": Math.round(r.debit * 100) / 100,
-    }));
+    const cols = EXPORT_COLUMNS.filter((c) => exportCols[c.key]);
+    if (!cols.length) { showToast("Select at least one column to export", "gold"); return; }
+    const raw = (r) => ({
+      code: r.code,
+      name: r.name,
+      dealer: r.dealer || "",
+      rm: r.rm || "",
+      branch: r.branch || "",
+      brokerage: Math.round(r.brokerage * 100) / 100,
+      debit: Math.round(r.debit * 100) / 100,
+    });
+    const exportRows = sorted.map((r) => {
+      const values = raw(r);
+      return Object.fromEntries(cols.map((c) => [c.label, values[c.key]]));
+    });
     const ws = XLSX.utils.json_to_sheet(exportRows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Clients");
     const searchPart = search ? `_${search.replace(/[^a-z0-9]+/gi, "_")}` : "";
     XLSX.writeFile(wb, `clients_${period}${searchPart}.xlsx`);
     showToast(`Exported ${exportRows.length} client(s)`);
+    setExportOpen(false);
   };
 
   return (
@@ -1330,13 +1350,42 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
               <button onClick={() => { setBulkOpen((o) => !o); setBulkPending(null); }} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: `1px solid ${TEAL}`, background: bulkOpen ? TEAL_SOFT : "#fff", color: TEAL, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
                 <UploadCloud size={15} /> Bulk upload
               </button>
-              <button onClick={exportClients} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+              <button onClick={() => setExportOpen((o) => !o)} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: exportOpen ? TEAL_SOFT : "#fff", color: INK, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
                 <Download size={15} /> Export
               </button>
             </div>
           )}
         </div>
       </div>
+
+      {exportOpen && isAdmin && (
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 10 }}>Columns to export</div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+            {EXPORT_COLUMNS.map((c) => (
+              <label key={c.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: INK_SOFT, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={!!exportCols[c.key]}
+                  onChange={(e) => setExportCols({ ...exportCols, [c.key]: e.target.checked })}
+                />
+                {c.label}
+              </label>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={exportClients} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 16px", borderRadius: 8, border: "none", background: TEAL, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+              <Download size={14} /> Download ({sorted.length} client{sorted.length === 1 ? "" : "s"})
+            </button>
+            <button onClick={() => setExportCols(Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, true])))} style={{ padding: "9px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+              Select all
+            </button>
+            <button onClick={() => setExportCols(Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, false])))} style={{ padding: "9px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+              Clear all
+            </button>
+          </div>
+        </Card>
+      )}
 
       {adding && isAdmin && (
         <Card style={{ padding: 16 }}>
