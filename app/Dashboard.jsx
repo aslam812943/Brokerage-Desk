@@ -3160,7 +3160,10 @@ function TradedClientsList({ clients }) {
       {clients.map((c) => (
         <div key={c.code} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "7px 10px", borderRadius: 8, border: `1px solid ${LINE}`, fontSize: 12.5 }}>
           <span><strong style={{ color: INK }}>{c.code}</strong> <span style={{ color: INK_SOFT }}>{c.name}</span></span>
-          <Badge text={c.role === "rm" ? "RM" : "Dealer"} color={c.role === "rm" ? ROSE : VIOLET} />
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontVariantNumeric: "tabular-nums", color: INK }}>{fmtINR(c.netBrokerage)}</span>
+            <Badge text={c.role === "rm" ? "RM" : "Dealer"} color={c.role === "rm" ? ROSE : VIOLET} />
+          </span>
         </div>
       ))}
     </div>

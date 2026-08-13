@@ -159,7 +159,7 @@ export async function GET() {
              -- client can have a DailyRecord row for the month with a net
              -- brokerage that sums to exactly 0 (e.g. offsetting entries),
              -- which shouldn't inflate the traded-client count/list.
-             SELECT jsonb_agg(jsonb_build_object('code', pc.code, 'name', pc.name, 'role', pc.role) ORDER BY pc.code)
+             SELECT jsonb_agg(jsonb_build_object('code', pc.code, 'name', pc.name, 'role', pc.role, 'netBrokerage', ROUND(pc.client_amt::numeric, 2)) ORDER BY pc.code)
              FROM per_client pc WHERE pc.person = pr.person AND pc.client_amt <> 0
            ) AS "tradedClients"
     FROM person_rows pr
