@@ -151,10 +151,16 @@ export async function GET() {
     SELECT pr.person,
            COALESCE(SUM(pr.amt), 0)::float8 AS mtd,
            COALESCE(SUM(pr.amt) FILTER (WHERE pr.date = ${prevDate ?? ""}), 0)::float8 AS yesterday,
-           COUNT(DISTINCT pr."codeNorm")::int AS "tradedCount",
            (
+             SELECT COUNT(*) FROM per_client pc WHERE pc.person = pr.person AND pc.client_amt <> 0
+           )::int AS "tradedCount",
+           (
+             -- Only clients with nonzero net brokerage count as "traded" — a
+             -- client can have a DailyRecord row for the month with a net
+             -- brokerage that sums to exactly 0 (e.g. offsetting entries),
+             -- which shouldn't inflate the traded-client count/list.
              SELECT jsonb_agg(jsonb_build_object('code', pc.code, 'name', pc.name, 'role', pc.role) ORDER BY pc.code)
-             FROM per_client pc WHERE pc.person = pr.person
+             FROM per_client pc WHERE pc.person = pr.person AND pc.client_amt <> 0
            ) AS "tradedClients"
     FROM person_rows pr
     GROUP BY pr.person
