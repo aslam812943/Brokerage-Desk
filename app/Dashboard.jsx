@@ -70,16 +70,23 @@ function parseISO(str) {
   const [y, m, d] = str.split("-").map(Number);
   return new Date(y, m - 1, d);
 }
-// True when from/to (ISO date strings) span exactly one complete calendar
-// month — the 1st through that month's real last day (28-31, leap-year
-// aware since it's driven by `new Date`, not a fixed table).
-function isFullCalendarMonth(from, to) {
-  if (!from || !to) return false;
+// True when from/to (ISO date strings) span some whole number of consecutive
+// calendar months (1st of the start month through the real last day of the
+// end month)
+// — returns how many months that spans (1 for Month, 3 for Quarter, 12 for
+// Year), or null if the range isn't month-aligned (e.g. a partial custom
+// range). Salary-based incentive eligibility scales by this count, since a
+// dealer/RM's salary is a monthly figure — a quarter's worth of brokerage
+// needs to clear 3x the monthly salary (× the incentive multiplier), not the
+// bare monthly figure.
+function monthsInFullCalendarSpan(from, to) {
+  if (!from || !to) return null;
   const f = parseISO(from), t = parseISO(to);
-  if (f.getFullYear() !== t.getFullYear() || f.getMonth() !== t.getMonth()) return false;
-  if (f.getDate() !== 1) return false;
+  if (f.getDate() !== 1) return null;
   const lastDay = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate();
-  return t.getDate() === lastDay;
+  if (t.getDate() !== lastDay) return null;
+  const months = (t.getFullYear() - f.getFullYear()) * 12 + (t.getMonth() - f.getMonth()) + 1;
+  return months > 0 ? months : null;
 }
 const normCode = (c) => String(c || "").trim().toUpperCase().replace(/\s+/g, "");
 // Dealer names are matched case-insensitively against the known list so a
@@ -413,6 +420,11 @@ export default function App() {
   const username = session?.user?.name || "";
   const mustChangePassword = !!session?.user?.mustChangePassword;
   const [toast, setToast] = useState(null);
+  // Which book a non-admin login is scoped to — "dealer" or "rm" — used to
+  // label the signed-in badge and hide the dealer-only Monthly Tasks tab
+  // for an RM login. Defaults to "dealer" until it loads, matching every
+  // VIEWER account's behavior before RM logins existed.
+  const [viewerKind, setViewerKind] = useState("dealer");
 
   const showToast = (msg, tone = "emerald") => { setToast({ msg, tone }); setTimeout(() => setToast(null), 3200); };
   const isAdmin = role === "admin";
@@ -425,13 +437,14 @@ export default function App() {
       // /api/daily/dates and /api/debit/latest are both cheap — bounded by
       // dates/clients, not by transaction volume — so both load eagerly
       // instead of waiting on the lazy full-history fetch below.
-      const [m, dr, rr, t, dates, latestDebit] = await Promise.all([
+      const [m, dr, rr, t, dates, latestDebit, scope] = await Promise.all([
         storageGet("master-clients"),
         storageGet("dealers-list"),
         storageGet("rms-list"),
         storageGet("targets"),
         apiGet("/api/daily/dates"),
         apiGet("/api/debit/latest"),
+        apiGet("/api/viewer-scope"),
       ]);
       if (m) setMaster(m);
       if (dr) setDealerRegistry(dr);
@@ -439,6 +452,7 @@ export default function App() {
       if (t) setTargets(t);
       if (dates) setDailyDates([...dates].sort());
       if (latestDebit) setLatestDebitByCode(Object.fromEntries(latestDebit.map((r) => [normCode(r.code), r.debit])));
+      if (scope && !scope.isAdmin) setViewerKind(scope.kind === "rm" ? "rm" : "dealer");
     })();
   }, []);
 
@@ -689,7 +703,12 @@ export default function App() {
     { id: "reports", label: "Reports", icon: FileBarChart2, color: TEAL, adminOnly: true },
     { id: "targets", label: "Targets", icon: Target, color: ROSE, adminOnly: true },
   ];
-  const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin);
+  // Monthly Tasks is a per-dealer checklist admins manage by dealer name —
+  // an RM login has no tasks of its own there, so the tab is hidden rather
+  // than showing an empty, admin-invisible checklist keyed to its username.
+  const isRmViewer = !isAdmin && viewerKind === "rm";
+  const visibleNav = NAV.filter((n) => (!n.adminOnly || isAdmin) && !(n.id === "tasks" && isRmViewer));
+  useEffect(() => { if (isRmViewer && tab === "tasks") setTab("dashboard"); }, [isRmViewer, tab]);
 
   return (
     <div className="dt-root" style={{ background: BG, minHeight: 600, fontFamily: "var(--font-inter), sans-serif", color: INK, borderRadius: 16 }}>
@@ -749,7 +768,7 @@ export default function App() {
               </button>
             ))}
           </div>
-          <RoleSwitch role={role} username={username} />
+          <RoleSwitch role={role} username={username} viewerKind={viewerKind} />
         </div>
       </div>
 
@@ -791,7 +810,7 @@ export default function App() {
         ) : <HistoryLoadingPane />)}
         {tab === "reports" && isAdmin && <ReportsTab targets={targets} showToast={showToast} />}
         {tab === "targets" && isAdmin && <TargetsTab targets={targets} dealerNames={dealerNames} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
-        {tab === "tasks" && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
+        {tab === "tasks" && !isRmViewer && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
       </div>
 
       <div style={{ textAlign: "center", padding: "6px 0 14px", fontSize: 11, color: "#B7BCC5" }}>
@@ -807,13 +826,14 @@ export default function App() {
   );
 }
 
-function RoleSwitch({ role, username }) {
+function RoleSwitch({ role, username, viewerKind }) {
   const [open, setOpen] = useState(false);
   const [changingPw, setChangingPw] = useState(false);
+  const roleLabel = role === "admin" ? "Admin" : viewerKind === "rm" ? "RM" : "Dealer";
   return (
     <div style={{ position: "relative" }}>
       <button onClick={() => setOpen((o) => !o)} style={{ display: "flex", alignItems: "center", gap: 7, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.06)", color: "#fff", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
-        {role === "admin" ? <ShieldCheck size={14} /> : <Eye size={14} />} {username ? `${username} (${role === "admin" ? "Admin" : "Viewer"})` : (role === "admin" ? "Admin" : "Viewer")}
+        {role === "admin" ? <ShieldCheck size={14} /> : <Eye size={14} />} {username ? `${username} (${roleLabel})` : roleLabel}
       </button>
       {open && (
         <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", background: "#fff", borderRadius: 10, boxShadow: "0 12px 30px rgba(0,0,0,0.18)", padding: 6, width: 210, zIndex: 40 }}>
@@ -2358,23 +2378,30 @@ function UsersSection({ onWipeUsers, showToast }) {
         </div>
 
         {adding && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${LINE}` }}>
-            <input
-              placeholder="Username"
-              value={newUsername}
-              onChange={(e) => setNewUsername(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") submitNewUser(); }}
-              style={inputStyle}
-              autoFocus
-            />
-            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} style={inputStyle}>
-              <option value="VIEWER">Viewer</option>
-              <option value="ADMIN">Admin</option>
-            </select>
-            <button onClick={submitNewUser} disabled={creating || !newUsername.trim()} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: creating || !newUsername.trim() ? "#B7E4CE" : EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: creating || !newUsername.trim() ? "not-allowed" : "pointer" }}>
-              {creating ? "Creating…" : "Create"}
-            </button>
-            {createError && <span style={{ fontSize: 12.5, color: RED, fontWeight: 600 }}>{createError}</span>}
+          <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${LINE}` }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input
+                placeholder="Username"
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") submitNewUser(); }}
+                style={inputStyle}
+                autoFocus
+              />
+              <select value={newRole} onChange={(e) => setNewRole(e.target.value)} style={inputStyle}>
+                <option value="VIEWER">Viewer</option>
+                <option value="ADMIN">Admin</option>
+              </select>
+              <button onClick={submitNewUser} disabled={creating || !newUsername.trim()} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: creating || !newUsername.trim() ? "#B7E4CE" : EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: creating || !newUsername.trim() ? "not-allowed" : "pointer" }}>
+                {creating ? "Creating…" : "Create"}
+              </button>
+              {createError && <span style={{ fontSize: 12.5, color: RED, fontWeight: 600 }}>{createError}</span>}
+            </div>
+            {newRole === "VIEWER" && (
+              <div style={{ fontSize: 12, color: INK_SOFT, marginTop: 8 }}>
+                A Viewer's username must match an existing Dealer or RM name (case-insensitive) — that's what scopes their login to that dealer's or that RM's own clients and brokerage.
+              </div>
+            )}
           </div>
         )}
 
@@ -2644,7 +2671,11 @@ function ReportsTab({ targets, showToast }) {
   // (not necessarily today), so it only qualifies once that upload is
   // month-end — reviewing a just-finished month needs a custom 1st-to-31st
   // range instead, and that now qualifies too.
-  const isMonthlyView = isFullCalendarMonth(range.from, range.to);
+  // Not just the "Month" preset — any month-aligned range (Quarter, Year, or
+  // a custom 1st-to-last-day span) qualifies, scaled by how many months it
+  // covers (see incentiveFor below).
+  const salaryBasisMonths = monthsInFullCalendarSpan(range.from, range.to);
+  const isMonthlyView = salaryBasisMonths != null;
 
   // Month/Quarter/Year presets are resolved server-side relative to the
   // latest UPLOADED date, not the real calendar date — matches the
@@ -2684,12 +2715,17 @@ function ReportsTab({ targets, showToast }) {
 
   // salary/multiplier/eligible for one dealer's row — null salary means "not
   // set", kept separate from a genuine 0 so it renders as "—" not "0x".
+  // `salary` here is the monthly figure scaled to the selected range
+  // (salaryBasisMonths) — a Quarter view compares netBrokerage against 3x
+  // the monthly salary, Year against 12x, since the multiplier/eligibility
+  // threshold is always meant to apply per month of salary paid.
   const incentiveFor = (r) => {
-    const salary = targets.dealerSalary?.[r.dealer];
-    const hasSalary = salary != null && salary > 0;
+    const monthlySalary = targets.dealerSalary?.[r.dealer];
+    const hasSalary = monthlySalary != null && monthlySalary > 0;
+    const salary = hasSalary ? monthlySalary * (salaryBasisMonths || 1) : null;
     const multiplier = hasSalary ? r.netBrokerage / salary : null;
     const eligible = hasSalary && multiplier >= incentiveMultiplier;
-    return { salary: hasSalary ? salary : null, multiplier, eligible };
+    return { salary, multiplier, eligible };
   };
 
   const exportExcel = () => {
@@ -2781,7 +2817,7 @@ function ReportsTab({ targets, showToast }) {
                 <thead>
                   <tr>
                     <th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th>Total Brokerage</th><th>Net Brokerage</th>
-                    {isMonthlyView && <><th>Salary</th><th>Multiplier</th><th>Incentive</th></>}
+                    {isMonthlyView && <><th>Salary{salaryBasisMonths > 1 ? ` (×${salaryBasisMonths})` : ""}</th><th>Multiplier</th><th>Incentive</th></>}
                     {monthComparison && <th>vs Last Month</th>}
                   </tr>
                 </thead>

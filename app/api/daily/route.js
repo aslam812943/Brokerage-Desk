@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "../../../lib/prisma";
 import { pgPool } from "../../../lib/pgPool";
-import { requireSession } from "../../../lib/apiAuth";
+import { requireSession, viewerClientWhere } from "../../../lib/apiAuth";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // Hard cap — prevents unbounded DB reads. A single day's upload (SW + Kotak,
@@ -21,7 +21,7 @@ export async function GET(req) {
   let allowedCodes = null;
   if (!isAdmin) {
     const clients = await prisma.masterClient.findMany({
-      where: { dealer: { equals: session.user.name, mode: "insensitive" } },
+      where: viewerClientWhere(session.user.name),
       select: { code: true },
     });
     allowedCodes = new Set(clients.map((c) => normCode(c.code)));

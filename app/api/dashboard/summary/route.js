@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../../../lib/prisma";
-import { requireSession } from "../../../../lib/apiAuth";
+import { requireSession, viewerClientWhere } from "../../../../lib/apiAuth";
 
 const UNMAPPED = "Unmapped";
 
@@ -22,13 +22,13 @@ export async function GET(req) {
     return NextResponse.json({ error: "Invalid period" }, { status: 400 });
   }
 
-  // A dealer (VIEWER) login only ever sees its own clients — same scoping
-  // /api/daily applies today, expressed here as a codeNorm allowlist so it
-  // can be pushed into the SQL WHERE clause instead of filtered in JS.
+  // A dealer or RM (VIEWER) login only ever sees its own clients — same
+  // scoping /api/daily applies today, expressed here as a codeNorm allowlist
+  // so it can be pushed into the SQL WHERE clause instead of filtered in JS.
   let allowedCodeNorms = null;
   if (!isAdmin) {
     const clients = await prisma.masterClient.findMany({
-      where: { dealer: { equals: session.user.name, mode: "insensitive" } },
+      where: viewerClientWhere(session.user.name),
       select: { codeNorm: true },
     });
     allowedCodeNorms = clients.map((c) => c.codeNorm).filter(Boolean);
@@ -71,9 +71,10 @@ export async function GET(req) {
   const rmSplitPct = targets?.rmSplitPct ?? 50;
 
   // Every query below joins through this same shape: one row per DailyRecord,
-  // carrying the Kotak-share-adjusted amount (netRaw) and the dealer's share
-  // of it (dealerPct) — mirroring splitShares() in Dashboard.jsx exactly, so
-  // dealerRows/trend/KPIs all agree with what the Dealers tab already shows.
+  // carrying the Kotak-share-adjusted amount (netRaw) and both the dealer's
+  // and the RM's share of it (dealerPct/rmPct) — mirroring splitShares() in
+  // Dashboard.jsx exactly, so dealerRows/trend/KPIs all agree with what the
+  // Dealers/RMs tabs already show.
   const scopeSql = allowedCodeNorms?.length
     ? Prisma.sql`AND dr."codeNorm" IN (${Prisma.join(allowedCodeNorms)})`
     : Prisma.empty;
@@ -83,19 +84,35 @@ export async function GET(req) {
       dr.code,
       dr.name,
       COALESCE(NULLIF(m.dealer, ''), ${UNMAPPED}) AS dealer,
+      COALESCE(m.rm, '') AS rm,
       (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS "netRaw",
       (CASE
-        WHEN COALESCE(m.dealer, '') = '' AND COALESCE(m.rm, '') = '' THEN 0
         WHEN COALESCE(m.dealer, '') = '' THEN 0
         WHEN COALESCE(m.rm, '') = '' THEN 100
         WHEN lower(m.dealer) = lower(m.rm) THEN 100
         ELSE 100 - ${rmSplitPct}::float8
-      END) AS "dealerPct"
+      END) AS "dealerPct",
+      (CASE
+        WHEN COALESCE(m.rm, '') = '' THEN 0
+        WHEN COALESCE(m.dealer, '') = '' THEN 100
+        WHEN lower(m.dealer) = lower(m.rm) THEN 0
+        ELSE ${rmSplitPct}::float8
+      END) AS "rmPct"
     FROM "DailyRecord" dr
     LEFT JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
     WHERE ${dateFilterSql} ${scopeSql}
   `;
-  const netExpr = isAdmin ? Prisma.sql`"netRaw"` : Prisma.sql`("netRaw" * "dealerPct" / 100.0)`;
+  // Admin sees the undivided total. A non-admin viewer sees only its own
+  // share of each record — the dealer's share on clients where it's the
+  // dealer, the RM's share on clients where it's the RM (a client can only
+  // match one of the two, per viewerClientWhere's scoping above).
+  const netExpr = isAdmin
+    ? Prisma.sql`"netRaw"`
+    : Prisma.sql`(CASE
+        WHEN lower(dealer) = lower(${session.user.name}) THEN "netRaw" * "dealerPct" / 100.0
+        WHEN lower(rm) = lower(${session.user.name}) THEN "netRaw" * "rmPct" / 100.0
+        ELSE 0
+      END)`;
 
   const periodFilter = {
     day: Prisma.sql`dr.date = ${latestDate}`,

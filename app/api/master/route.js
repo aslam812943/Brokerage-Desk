@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "../../../lib/prisma";
-import { requireSession, requireAdmin } from "../../../lib/apiAuth";
+import { requireSession, requireAdmin, viewerClientWhere } from "../../../lib/apiAuth";
 import { writeAudit } from "../../../lib/audit";
 
 const clientSchema = z.object({
@@ -18,7 +18,7 @@ export async function GET() {
 
   const isAdmin = session.user.role === "ADMIN";
   const rows = await prisma.masterClient.findMany(
-    isAdmin ? {} : { where: { dealer: { equals: session.user.name, mode: "insensitive" } } }
+    isAdmin ? {} : { where: viewerClientWhere(session.user.name) }
   );
   return NextResponse.json(rows);
 }

@@ -15,8 +15,10 @@ export async function GET(req, { params }) {
   if (!codeNorm) return NextResponse.json({ error: "Invalid code" }, { status: 400 });
 
   if (session.user.role !== "ADMIN") {
-    const client = await prisma.masterClient.findUnique({ where: { codeNorm }, select: { dealer: true } });
-    if (!client || client.dealer.toLowerCase() !== session.user.name.toLowerCase()) {
+    const client = await prisma.masterClient.findUnique({ where: { codeNorm }, select: { dealer: true, rm: true } });
+    const username = session.user.name.toLowerCase();
+    const owned = client && (client.dealer.toLowerCase() === username || client.rm.toLowerCase() === username);
+    if (!owned) {
       return NextResponse.json([]);
     }
   }

@@ -1,23 +1,19 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "../../../lib/prisma";
-import { requireSession, requireAdmin } from "../../../lib/apiAuth";
+import { requireSession, requireAdmin, resolveViewerScope } from "../../../lib/apiAuth";
 
 export async function GET() {
   const { session, response } = await requireSession();
   if (response) return response;
 
   if (session.user.role !== "ADMIN") {
-    const dealerMatch = await prisma.dealer.findFirst({
-      where: { name: { equals: session.user.name, mode: "insensitive" } },
-    });
-    if (dealerMatch) return NextResponse.json([dealerMatch.name]);
-
-    const clientMatch = await prisma.masterClient.findFirst({
-      where: { dealer: { equals: session.user.name, mode: "insensitive" } },
-      select: { dealer: true },
-    });
-    return NextResponse.json([clientMatch ? clientMatch.dealer : session.user.name]);
+    const scope = await resolveViewerScope(session.user.name);
+    // A dealer login sees its own name here (used to seed the dealer
+    // registry list client-side). An RM login isn't a dealer at all — the
+    // dealer(s) tied to its own clients already surface separately, via the
+    // `dealer` field on each row /api/master returns for it.
+    return NextResponse.json(scope.kind === "dealer" ? [scope.name] : []);
   }
 
   const rows = await prisma.dealer.findMany({ orderBy: { name: "asc" } });

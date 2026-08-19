@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "../../../../lib/prisma";
-import { requireSession } from "../../../../lib/apiAuth";
+import { requireSession, resolveViewerScope } from "../../../../lib/apiAuth";
 
 function isoDate(y, m0, d) { return `${y}-${String(m0 + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
 
@@ -20,16 +20,6 @@ function tradingDaysInMonth(year, month0, holidaySet, throughDay) {
   return count;
 }
 
-async function resolveOwnDealerName(username) {
-  const dealerMatch = await prisma.dealer.findFirst({ where: { name: { equals: username, mode: "insensitive" } } });
-  if (dealerMatch) return dealerMatch.name;
-  const clientMatch = await prisma.masterClient.findFirst({
-    where: { dealer: { equals: username, mode: "insensitive" } },
-    select: { dealer: true },
-  });
-  return clientMatch ? clientMatch.dealer : username;
-}
-
 function caseInsensitiveGet(obj, key) {
   const matchKey = Object.keys(obj || {}).find((k) => k.toLowerCase() === key.toLowerCase());
   return matchKey ? obj[matchKey] : undefined;
@@ -42,9 +32,9 @@ function caseInsensitiveGet(obj, key) {
 // dailyAvgAchieved/dailyShortfall pair with dailyTarget: how much per trading
 // day has actually landed so far this month, and the gap (if any) between
 // that and the per-day pace needed to hit the full month's target.
-function buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier) {
+function buildPersonSummary(name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier) {
   const agg = aggByPerson[name.toLowerCase()];
-  const clientsMapped = Number(caseInsensitiveGet(mappedByDealer, name)) || 0;
+  const clientsMapped = Number(caseInsensitiveGet(mappedByPerson, name)) || 0;
   const mtdRevenue = agg?.mtd || 0;
   const rawSalary = Number(caseInsensitiveGet(dealerSalary, name));
   const hasSalary = !isNaN(rawSalary) && rawSalary > 0;
@@ -94,7 +84,16 @@ export async function GET() {
   const [dateRows, targetsRow, mappedCounts, holidays] = await Promise.all([
     prisma.$queryRaw`SELECT DISTINCT date FROM "DailyRecord" ORDER BY date DESC LIMIT 2`,
     prisma.targets.findUnique({ where: { id: 1 } }),
-    prisma.masterClient.groupBy({ by: ["dealer"], where: { dealer: { not: "" } }, _count: { _all: true } }),
+    // Clients mapped per person, whether as dealer or RM — same 'person'
+    // shape as person_rows below (a client where dealer and RM are the same
+    // person only counts once, under the dealer bucket).
+    prisma.$queryRaw`
+      SELECT person, COUNT(*)::int AS cnt FROM (
+        SELECT dealer AS person FROM "MasterClient" WHERE dealer <> ''
+        UNION ALL
+        SELECT rm AS person FROM "MasterClient" WHERE rm <> '' AND lower(rm) <> lower(dealer)
+      ) t GROUP BY person
+    `,
     prisma.tradingHoliday.findMany({ select: { date: true } }),
   ]);
 
@@ -111,7 +110,7 @@ export async function GET() {
   const rmSplitPct = targetsRow?.rmSplitPct ?? 50;
   const dealerSalary = targetsRow?.dealerSalary ?? {};
   const incentiveMultiplier = targetsRow?.incentiveMultiplier ?? 10;
-  const mappedByDealer = Object.fromEntries(mappedCounts.map((r) => [r.dealer, r._count._all]));
+  const mappedByPerson = Object.fromEntries(mappedCounts.map((r) => [r.person, r.cnt]));
   const holidaySet = new Set(holidays.map((h) => h.date));
   const tradingDays = tradingDaysInMonth(y, m0, holidaySet);
   const latestDay = Number(latestDate.split("-")[2]);
@@ -201,12 +200,12 @@ export async function GET() {
   const aggByPerson = Object.fromEntries(personRows.map((r) => [r.person.toLowerCase(), r]));
 
   if (!isAdmin) {
-    const dealer = await resolveOwnDealerName(session.user.name);
+    const scope = await resolveViewerScope(session.user.name);
     return NextResponse.json({
       latestDate,
       prevDate,
       prevMonthStart,
-      ...buildPersonSummary(dealer, aggByPerson, mappedByDealer, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier),
+      ...buildPersonSummary(scope.name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier),
     });
   }
 
@@ -220,7 +219,7 @@ export async function GET() {
   const dealerNames = dealerNameRows.map((r) => r.name);
 
   const rows = dealerNames
-    .map((name) => buildPersonSummary(name, aggByPerson, mappedByDealer, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier))
+    .map((name) => buildPersonSummary(name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier))
     .sort((a, b) => b.mtdRevenue - a.mtdRevenue);
 
   return NextResponse.json({ latestDate, prevDate, prevMonthStart, rows });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../../../lib/prisma";
-import { requireSession } from "../../../../lib/apiAuth";
+import { requireSession, viewerClientWhere } from "../../../../lib/apiAuth";
 
 function isoDate(y, m0, d) { return `${y}-${String(m0 + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
 
@@ -19,7 +19,7 @@ export async function GET(req) {
   let allowedCodeNorms = null;
   if (!isAdmin) {
     const clients = await prisma.masterClient.findMany({
-      where: { dealer: { equals: session.user.name, mode: "insensitive" } },
+      where: viewerClientWhere(session.user.name),
       select: { codeNorm: true },
     });
     allowedCodeNorms = clients.map((c) => c.codeNorm).filter(Boolean);

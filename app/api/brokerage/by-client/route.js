@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../../../lib/prisma";
-import { requireSession } from "../../../../lib/apiAuth";
+import { requireSession, viewerClientWhere } from "../../../../lib/apiAuth";
 
 // Per-client period brokerage — the one aggregate the Dealers tab's dealer
 // totals, RM/Dealer split table, and per-dealer export all reduce through.
@@ -24,7 +24,7 @@ export async function GET(req) {
   let allowedCodeNorms = null;
   if (!isAdmin) {
     const clients = await prisma.masterClient.findMany({
-      where: { dealer: { equals: session.user.name, mode: "insensitive" } },
+      where: viewerClientWhere(session.user.name),
       select: { codeNorm: true },
     });
     allowedCodeNorms = clients.map((c) => c.codeNorm).filter(Boolean);

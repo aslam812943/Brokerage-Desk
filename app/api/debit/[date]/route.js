@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "../../../../lib/prisma";
-import { requireSession, requireAdmin } from "../../../../lib/apiAuth";
+import { requireSession, requireAdmin, viewerClientWhere } from "../../../../lib/apiAuth";
 import { writeAudit } from "../../../../lib/audit";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -32,7 +32,7 @@ export async function GET(req, { params }) {
   if (session.user.role === "ADMIN") return NextResponse.json(rows);
 
   const clients = await prisma.masterClient.findMany({
-    where: { dealer: { equals: session.user.name, mode: "insensitive" } },
+    where: viewerClientWhere(session.user.name),
     select: { code: true },
   });
   const allowedCodes = new Set(clients.map((c) => normCode(c.code)));
