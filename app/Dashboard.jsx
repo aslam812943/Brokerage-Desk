@@ -2740,7 +2740,7 @@ function ReportsTab({ targets, showToast }) {
       };
       if (!isMonthlyView) return base;
       const { salary, multiplier, eligible } = incentiveFor(r);
-      return { ...base, "Salary": salary ?? "", "Multiplier": multiplier != null ? `${multiplier.toFixed(2)}x` : "", "Incentive Eligible": salary == null ? "" : (eligible ? "Yes" : "No") };
+      return { ...base, "Multiplier": multiplier != null ? `${multiplier.toFixed(2)}x` : "", "Incentive Eligible": salary == null ? "" : (eligible ? "Yes" : "No") };
     });
     data.push({ "Dealer": "TOTAL", "Clients Mapped": totals.clientsMapped, "Traded Clients": totals.tradedClients, "Total Brokerage": Math.round(totals.totalBrokerage * 100) / 100, "Net Brokerage": Math.round(totals.netBrokerage * 100) / 100 });
     const ws = XLSX.utils.json_to_sheet(data);
@@ -2817,7 +2817,7 @@ function ReportsTab({ targets, showToast }) {
                 <thead>
                   <tr>
                     <th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th>Total Brokerage</th><th>Net Brokerage</th>
-                    {isMonthlyView && <><th>Salary{salaryBasisMonths > 1 ? ` (×${salaryBasisMonths})` : ""}</th><th>Multiplier</th><th>Incentive</th></>}
+                    {isMonthlyView && <><th>Multiplier</th><th>Incentive</th></>}
                     {monthComparison && <th>vs Last Month</th>}
                   </tr>
                 </thead>
@@ -2843,7 +2843,6 @@ function ReportsTab({ targets, showToast }) {
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.netBrokerage)}</td>
                         {isMonthlyView && (
                           <>
-                            <td style={{ fontVariantNumeric: "tabular-nums" }}>{salary != null ? fmtFull(salary) : "—"}</td>
                             <td style={{ fontVariantNumeric: "tabular-nums" }}>{multiplier != null ? `${multiplier.toFixed(2)}x` : "—"}</td>
                             <td>{salary == null ? <span style={{ color: INK_SOFT }}>—</span> : <Badge text={eligible ? "Eligible" : "Not eligible"} color={eligible ? EMERALD : "#9AA1AC"} />}</td>
                           </>
@@ -2865,7 +2864,7 @@ function ReportsTab({ targets, showToast }) {
                       const { salary: expSalary, multiplier: expMultiplier, eligible: expEligible } = incentiveFor(r);
                       out.push(
                         <tr key={`${r.dealer}-detail`}>
-                          <td colSpan={6 + (isMonthlyView ? 3 : 0)} style={{ background: "#FAFBFC" }}>
+                          <td colSpan={6 + (isMonthlyView ? 2 : 0)} style={{ background: "#FAFBFC" }}>
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, padding: "10px 4px" }}>
                               <KPI label="Prev Month Brokerage" value={fmtINR(r.prevNetBrokerage)} tone="ink" icon={Calendar} />
                               <KPI label="Prev Month Traded Clients" value={r.prevTradedClients} tone="violet" icon={Users} />
@@ -2881,7 +2880,7 @@ function ReportsTab({ targets, showToast }) {
                               <KPI
                                 label="Incentive"
                                 value={expSalary == null ? "—" : expEligible ? "Eligible" : "Not eligible"}
-                                sub={expSalary == null ? "Set a salary in the Targets tab" : `${expMultiplier.toFixed(2)}x of ${fmtINR(expSalary)} salary`}
+                                sub={expSalary == null ? "Set a salary in the Targets tab" : `${expMultiplier.toFixed(2)}x of monthly salary`}
                                 tone={expSalary == null ? "violet" : expEligible ? "emerald" : "red"}
                                 icon={ShieldCheck}
                               />
@@ -2899,7 +2898,7 @@ function ReportsTab({ targets, showToast }) {
                     return out;
                   })}
                   {(!rows || rows.length === 0) && (
-                    <tr><td colSpan={5 + (isMonthlyView ? 3 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
+                    <tr><td colSpan={5 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
                   )}
                 </tbody>
                 {rows && rows.length > 0 && (
@@ -2910,7 +2909,7 @@ function ReportsTab({ targets, showToast }) {
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.tradedClients}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.totalBrokerage)}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.netBrokerage)}</td>
-                      {isMonthlyView && <><td></td><td></td><td></td></>}
+                      {isMonthlyView && <><td></td><td></td></>}
                       {monthComparison && <td></td>}
                     </tr>
                   </tfoot>
