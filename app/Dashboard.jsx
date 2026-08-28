@@ -749,7 +749,7 @@ export default function App() {
       <div className="dt-header" style={{ background: NAVY, borderRadius: "16px 16px 0 0", padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ width: 38, height: 38, borderRadius: 10, background: `linear-gradient(135deg, ${BLUE}, ${VIOLET})`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <IndianRupee size={19} color="#fff" />
+            <IndianRupee size={19} color="#fff" strokeWidth={2.75} />
           </div>
           <div>
             <div style={{ fontSize: 18, fontWeight: 800, color: "#fff" }}>Sharewealth Edge</div>
