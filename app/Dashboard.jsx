@@ -1616,10 +1616,10 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
   };
 
   const rmSplitPct = targets.rmSplitPct ?? 50;
-  // Total = undivided brokerage attributed to the dealer (unchanged, drives the
-  // monthly target progress bar). Net = the dealer's own share after subtracting
-  // whatever the mapped RM takes per splitShares() — the same split used in the
-  // RM/Dealer split table below. Both are grouped from brokerageByClient (fetched
+  // Total = undivided brokerage attributed to the dealer. Net = the dealer's
+  // own share after subtracting whatever the mapped RM takes per splitShares()
+  // — the same split used in the RM/Dealer split table below, and what drives
+  // the monthly target progress bar. Both are grouped from brokerageByClient (fetched
   // above, already period-filtered) via master — sum is associative, so grouping
   // per-client totals by dealer gives the identical result to summing every raw
   // record by dealer, at a fraction of the data volume.
@@ -1778,7 +1778,7 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
             <thead><tr><th>Dealer</th><th>Clients</th><th>Total Brokerage</th><th>Net Brokerage</th><th>Monthly Target</th><th style={{ width: 150 }}>Progress</th><th></th>{isAdmin && <th></th>}</tr></thead>
             <tbody>
               {rows.map((r) => {
-                const monthPct = r.target > 0 && period === "month" ? ((brokerageByDealer[r.dealer] || 0) / r.target) * 100 : null;
+                const monthPct = r.target > 0 && period === "month" ? ((netBrokerageByDealer[r.dealer] || 0) / r.target) * 100 : null;
                 return (
                   <tr key={r.dealer}>
                     <td>
