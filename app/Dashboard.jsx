@@ -1331,7 +1331,37 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
     const { records, error } = parseMasterSheet(rows);
     if (error) { showToast(error, "red"); return; }
     if (!records.length) { showToast("No client rows found in file", "red"); return; }
-    setBulkPending({ records, fileName: file.name });
+
+    // Break the file down before anything is written: which codes already
+    // exist (will be overwritten), which are new, and which codes repeat
+    // inside the file itself (only the last occurrence is kept).
+    const curByCode = new Map();
+    master.forEach((m) => curByCode.set(normCode(m.code), m));
+    const seen = new Set();
+    let dupInFile = 0;
+    const overwriteByCode = new Map();
+    records.forEach((r) => {
+      const k = normCode(r.code);
+      if (seen.has(k)) dupInFile += 1;
+      seen.add(k);
+      const cur = curByCode.get(k);
+      if (cur) {
+        overwriteByCode.set(k, {
+          code: r.code,
+          cur,
+          next: { ...r, dealer: canonicalDealer(dealerNames, r.dealer), rm: canonicalRm(rmNames, r.rm) },
+        });
+      }
+    });
+    const overwrites = [...overwriteByCode.values()].sort((a, b) => String(a.code).localeCompare(String(b.code)));
+    setBulkPending({
+      records,
+      fileName: file.name,
+      uniqueCount: seen.size,
+      dupInFile,
+      addCount: seen.size - overwrites.length,
+      overwrites,
+    });
   };
   const confirmBulk = async () => {
     if (!bulkPending) return;
@@ -1515,10 +1545,47 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
           {bulkPending && (
             <div style={{ marginTop: 16, padding: 16, background: TEAL_SOFT, borderRadius: 10, display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ fontSize: 13.5 }}>
-                Parsed <strong>{bulkPending.fileName}</strong> — {bulkPending.records.length} client rows found.
+                Parsed <strong>{bulkPending.fileName}</strong> — {bulkPending.records.length} row{bulkPending.records.length === 1 ? "" : "s"}
+                {bulkPending.dupInFile > 0 && <> ({bulkPending.uniqueCount} unique codes; <strong>{bulkPending.dupInFile}</strong> repeated in the file — only the last of each is kept)</>}.
               </div>
+              <div style={{ fontSize: 13 }}>
+                <span style={{ color: EMERALD, fontWeight: 700 }}>{bulkPending.addCount} new</span> will be added ·{" "}
+                <span style={{ color: bulkPending.overwrites.length ? GOLD : INK_SOFT, fontWeight: 700 }}>{bulkPending.overwrites.length} already exist</span> and will be overwritten.
+              </div>
+
+              {bulkPending.overwrites.length > 0 && (
+                <div style={{ background: "#fff", border: `1px solid ${LINE}`, borderRadius: 8, maxHeight: 240, overflowY: "auto" }}>
+                  <table style={{ width: "100%", fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ position: "sticky", top: 0, background: "#F7F8FA" }}>
+                        <th style={{ textAlign: "left", padding: "6px 10px", color: INK_SOFT }}>Code</th>
+                        <th style={{ textAlign: "left", padding: "6px 10px", color: INK_SOFT }}>Name</th>
+                        <th style={{ textAlign: "left", padding: "6px 10px", color: INK_SOFT }}>Dealer / RM — current → file</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bulkPending.overwrites.map((o) => {
+                        const changed = (o.cur.dealer || "") !== (o.next.dealer || "") || (o.cur.rm || "") !== (o.next.rm || "") || (o.cur.name || "") !== (o.next.name || "");
+                        return (
+                          <tr key={o.code} style={{ borderTop: `1px solid ${LINE}` }}>
+                            <td style={{ padding: "6px 10px", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{o.code}</td>
+                            <td style={{ padding: "6px 10px" }}>{o.cur.name || o.next.name || "—"}</td>
+                            <td style={{ padding: "6px 10px", color: changed ? INK : INK_SOFT }}>
+                              {(o.cur.dealer || "—")}/{(o.cur.rm || "—")} → {(o.next.dealer || "—")}/{(o.next.rm || "—")}
+                              {!changed && <span style={{ color: INK_SOFT }}> (no change)</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
               <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={confirmBulk} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Save to client list</button>
+                <button onClick={confirmBulk} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                  {bulkPending.overwrites.length ? `Overwrite ${bulkPending.overwrites.length} & add ${bulkPending.addCount}` : `Add ${bulkPending.addCount} client${bulkPending.addCount === 1 ? "" : "s"}`}
+                </button>
                 <button onClick={() => setBulkPending(null)} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Cancel</button>
               </div>
             </div>
