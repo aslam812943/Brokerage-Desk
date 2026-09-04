@@ -56,6 +56,8 @@ const fmtINR = (n) => {
   return `${sign}₹${abs.toFixed(0)}`;
 };
 const fmtFull = (n) => `₹${(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+const fmtDateShort = (d) => (d ? new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—");
+const fmtDateTime = (d) => (d ? new Date(d).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—");
 const quarterOf = (d) => Math.floor(d.getMonth() / 3) + 1;
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 // Matches the Dashboard tab's own period buttons ("day" reads as "Today"
@@ -163,6 +165,16 @@ async function apiPut(url, body) {
 async function apiDelete(url) {
   const res = await fetch(url, { method: "DELETE", credentials: "same-origin" });
   return res.ok;
+}
+async function apiPost(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => null);
+  return { ok: res.ok, data };
 }
 
 async function storageGet(key) {
@@ -567,6 +579,9 @@ export default function App() {
     storageDelete(`debit:${isoD}`);
   };
   const saveMaster = async (records) => { invalidateReadCache(); setMaster(records); storageSet("master-clients", records); };
+  // Re-pull the client list from the server without a write-back — used after
+  // a bulk upload / upload rollback, which mutate MasterClient server-side.
+  const reloadMaster = async () => { invalidateReadCache(); const m = await storageGet("master-clients"); if (m) setMaster(m); };
   const saveDealerRegistry = async (list) => { setDealerRegistry(list); storageSet("dealers-list", list); };
   const saveRmRegistry = async (list) => { setRmRegistry(list); storageSet("rms-list", list); };
   const saveTargets = async (t) => { invalidateReadCache(); setTargets(t); storageSet("targets", t); };
@@ -778,7 +793,7 @@ export default function App() {
         {tab === "clients" && (
           <ClientsTab
             master={master} targets={targets} latestDebitByCode={latestDebitByCode} dealerNames={dealerNames} rmNames={rmNames}
-            isAdmin={isAdmin} onSave={saveMaster} showToast={showToast} onWipe={wipeClients}
+            isAdmin={isAdmin} onSave={saveMaster} onReload={reloadMaster} showToast={showToast} onWipe={wipeClients}
           />
         )}
         {tab === "dealers" && (
@@ -1222,7 +1237,7 @@ const EXPORT_COLUMNS = [
   { key: "debit", label: "Debit Balance" },
 ];
 
-function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, isAdmin, onSave, showToast, onWipe }) {
+function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, isAdmin, onSave, onReload, showToast, onWipe }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("month");
   const [selectedClient, setSelectedClient] = useState(null);
@@ -1236,8 +1251,18 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   const [exportOpen, setExportOpen] = useState(false);
   const [exportCols, setExportCols] = useState(Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, true])));
   const [brokerageByCode, setBrokerageByCode] = useState({});
+  const [uploads, setUploads] = useState([]);
+  const [rollbackId, setRollbackId] = useState(null);
+  const [busyRollback, setBusyRollback] = useState(false);
   const bulkFileRef = useRef(null);
   const kotakShare = (targets.kotakSharePct ?? 85) / 100;
+
+  const refreshUploads = useCallback(async () => {
+    if (!isAdmin) return;
+    const rows = await apiGet("/api/master/bulk");
+    setUploads(Array.isArray(rows) ? rows : []);
+  }, [isAdmin]);
+  useEffect(() => { refreshUploads(); }, [refreshUploads]);
 
   // Same per-client aggregate the Dealers tab uses (bounded by client count,
   // not by transaction volume) — fetched here instead of reducing over every
@@ -1301,20 +1326,35 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
     if (!records.length) { showToast("No client rows found in file", "red"); return; }
     setBulkPending({ records, fileName: file.name });
   };
-  const confirmBulk = () => {
+  const confirmBulk = async () => {
     if (!bulkPending) return;
-    const byCode = {};
-    master.forEach((m) => { byCode[normCode(m.code)] = m; });
-    let updated = 0, created = 0;
-    bulkPending.records.forEach((r) => {
-      const key = normCode(r.code);
-      if (byCode[key]) updated++; else created++;
-      byCode[key] = { code: r.code, name: r.name, dealer: canonicalDealer(dealerNames, r.dealer), rm: canonicalRm(rmNames, r.rm), branch: r.branch };
-    });
-    onSave(Object.values(byCode));
-    showToast(`Bulk upload: ${created} added, ${updated} updated`);
+    const records = bulkPending.records.map((r) => ({
+      code: r.code,
+      name: r.name,
+      dealer: canonicalDealer(dealerNames, r.dealer),
+      rm: canonicalRm(rmNames, r.rm),
+      branch: r.branch,
+    }));
+    const { ok, data } = await apiPost("/api/master/bulk", { fileName: bulkPending.fileName, records });
+    if (!ok) { showToast(data?.error || "Bulk upload failed", "red"); return; }
+    showToast(`Bulk upload: ${data.createdCount} added, ${data.updatedCount} updated`);
     setBulkPending(null);
     setBulkOpen(false);
+    await onReload?.();
+    await refreshUploads();
+  };
+
+  // Wholesale rollback of one bulk upload: clients it added are deleted,
+  // clients it modified are restored to their pre-upload values.
+  const rollbackUpload = async (u) => {
+    setBusyRollback(true);
+    const ok = await apiDelete(`/api/master/bulk/${u.id}`);
+    setBusyRollback(false);
+    setRollbackId(null);
+    if (!ok) { showToast("Couldn't undo that upload", "red"); return; }
+    showToast(`Undid upload — ${u.createdCount} added removed, ${u.updatedCount} restored`, "gold");
+    await onReload?.();
+    await refreshUploads();
   };
 
   // Exports every row matching the current search/period, not just the
@@ -1465,6 +1505,40 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
         </Card>
       )}
 
+      {isAdmin && uploads.length > 0 && (
+        <Card style={{ padding: 18 }}>
+          <SectionTitle>Recent uploads</SectionTitle>
+          <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+            Each bulk upload can be rolled back in full — clients it added are removed and clients it changed are restored to their previous values.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {uploads.map((u) => (
+              <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "10px 12px", border: `1px solid ${LINE}`, borderRadius: 10, background: "#FAFBFC" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{u.fileName || "Bulk upload"}</div>
+                  <div style={{ fontSize: 12, color: INK_SOFT }}>
+                    {fmtDateTime(u.createdAt)}{u.username ? ` · ${u.username}` : ""} · <span style={{ color: EMERALD, fontWeight: 700 }}>{u.createdCount} added</span> · {u.updatedCount} updated
+                  </div>
+                </div>
+                {rollbackId === u.id ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 12.5, color: INK_SOFT }}>Roll this upload back?</span>
+                    <button disabled={busyRollback} onClick={() => rollbackUpload(u)} style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: RED, color: "#fff", fontWeight: 700, fontSize: 12.5, cursor: busyRollback ? "wait" : "pointer" }}>
+                      {busyRollback ? "Working…" : "Yes, roll back"}
+                    </button>
+                    <button disabled={busyRollback} onClick={() => setRollbackId(null)} style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+                  </div>
+                ) : (
+                  <button onClick={() => setRollbackId(u.id)} style={{ display: "flex", gap: 6, alignItems: "center", padding: "7px 14px", borderRadius: 8, border: `1px solid ${RED}`, background: "#fff", color: RED, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+                    <Trash2 size={13} /> Roll back
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       <Card style={{ padding: 18 }}>
         <div style={{ overflowX: "auto", maxHeight: 520, overflowY: "auto" }}>
           <table>
@@ -1475,6 +1549,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
                 <SortHeader label="Dealer" active={sortKey === "dealer"} dir={sortDir} onClick={() => toggle("dealer")} />
                 <SortHeader label="RM" active={sortKey === "rm"} dir={sortDir} onClick={() => toggle("rm")} />
                 <SortHeader label="Branch" active={sortKey === "branch"} dir={sortDir} onClick={() => toggle("branch")} />
+                <SortHeader label="Added" active={sortKey === "createdAt"} dir={sortDir} onClick={() => toggle("createdAt")} />
                 <SortHeader label="Brokerage" active={sortKey === "brokerage"} dir={sortDir} onClick={() => toggle("brokerage")} />
                 <SortHeader label="Debit" active={sortKey === "debit"} dir={sortDir} onClick={() => toggle("debit")} />
                 {isAdmin && <th></th>}
@@ -1512,6 +1587,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
                       ) : <span style={{ color: INK_SOFT }}>{r.rm}</span>}
                     </td>
                     <td>{editing ? <input value={editDraft.branch} onChange={(e) => setEditDraft({ ...editDraft, branch: e.target.value })} style={{ ...inputStyle, width: 110 }} /> : <span style={{ color: INK_SOFT }}>{r.branch}</span>}</td>
+                    <td style={{ color: INK_SOFT, whiteSpace: "nowrap" }} title={fmtDateTime(r.createdAt)}>{fmtDateShort(r.createdAt)}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.brokerage)}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", color: r.debit > 0 ? RED : INK_SOFT }}>{r.debit ? fmtFull(r.debit) : "—"}</td>
                     {isAdmin && (
