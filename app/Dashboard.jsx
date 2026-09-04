@@ -1254,13 +1254,20 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   const [uploads, setUploads] = useState([]);
   const [rollbackId, setRollbackId] = useState(null);
   const [busyRollback, setBusyRollback] = useState(false);
+  const [addedDates, setAddedDates] = useState([]);
+  const [dateDeleteId, setDateDeleteId] = useState(null);
+  const [busyDate, setBusyDate] = useState(false);
   const bulkFileRef = useRef(null);
   const kotakShare = (targets.kotakSharePct ?? 85) / 100;
 
   const refreshUploads = useCallback(async () => {
     if (!isAdmin) return;
-    const rows = await apiGet("/api/master/bulk");
+    const [rows, dates] = await Promise.all([
+      apiGet("/api/master/bulk"),
+      apiGet("/api/master/added-dates"),
+    ]);
     setUploads(Array.isArray(rows) ? rows : []);
+    setAddedDates(Array.isArray(dates) ? dates : []);
   }, [isAdmin]);
   useEffect(() => { refreshUploads(); }, [refreshUploads]);
 
@@ -1353,6 +1360,20 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
     setRollbackId(null);
     if (!ok) { showToast("Couldn't undo that upload", "red"); return; }
     showToast(`Undid upload — ${u.createdCount} added removed, ${u.updatedCount} restored`, "gold");
+    await onReload?.();
+    await refreshUploads();
+  };
+
+  // Undo an older upload that predates per-upload tracking: delete every
+  // client added on that day. Additions only — edits to pre-existing clients
+  // can't be reversed (no snapshot was kept back then).
+  const deleteAddedDate = async (d) => {
+    setBusyDate(true);
+    const ok = await apiDelete(`/api/master/added-dates/${d.date}`);
+    setBusyDate(false);
+    setDateDeleteId(null);
+    if (!ok) { showToast("Couldn't delete those clients", "red"); return; }
+    showToast(`Removed ${d.count} client(s) added on ${fmtDateShort(d.date)}`, "gold");
     await onReload?.();
     await refreshUploads();
   };
@@ -1531,6 +1552,37 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
                 ) : (
                   <button onClick={() => setRollbackId(u.id)} style={{ display: "flex", gap: 6, alignItems: "center", padding: "7px 14px", borderRadius: 8, border: `1px solid ${RED}`, background: "#fff", color: RED, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
                     <Trash2 size={13} /> Roll back
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {isAdmin && addedDates.length > 0 && (
+        <Card style={{ padding: 18 }}>
+          <SectionTitle>Clients by added date</SectionTitle>
+          <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+            Every client grouped by the day it was added — the handle on older uploads that ran before upload tracking. Deleting a day removes the clients added then; it can&apos;t restore edits made to clients that already existed.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 320, overflowY: "auto" }}>
+            {addedDates.map((d) => (
+              <div key={d.date} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "10px 12px", border: `1px solid ${LINE}`, borderRadius: 10, background: "#FAFBFC" }}>
+                <div style={{ fontSize: 13.5, color: INK }}>
+                  <strong>{fmtDateShort(d.date)}</strong> · {d.count} client{d.count === 1 ? "" : "s"} added
+                </div>
+                {dateDeleteId === d.date ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <span style={{ fontSize: 12.5, color: INK_SOFT }}>Delete all {d.count}?</span>
+                    <button disabled={busyDate} onClick={() => deleteAddedDate(d)} style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: RED, color: "#fff", fontWeight: 700, fontSize: 12.5, cursor: busyDate ? "wait" : "pointer" }}>
+                      {busyDate ? "Working…" : "Yes, delete"}
+                    </button>
+                    <button disabled={busyDate} onClick={() => setDateDeleteId(null)} style={{ padding: "7px 12px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Cancel</button>
+                  </div>
+                ) : (
+                  <button onClick={() => setDateDeleteId(d.date)} style={{ display: "flex", gap: 6, alignItems: "center", padding: "7px 14px", borderRadius: 8, border: `1px solid ${RED}`, background: "#fff", color: RED, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+                    <Trash2 size={13} /> Delete
                   </button>
                 )}
               </div>
