@@ -28,6 +28,7 @@ model MasterClient {
   rm        String   @default("")
   dealer    String   @default("")
   branch    String   @default("")
+  createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   // Generated column (see migration SQL) mirroring the normCode() convention
   // used client-side in Dashboard.jsx — lets SQL join DailyRecord <-> MasterClient
@@ -109,6 +110,26 @@ model DealerTask {
 model TradingHoliday {
   date String @id // ISO yyyy-mm-dd
   name String @default("")
+}
+
+// One row per bulk client upload (Clients tab → "Bulk upload"), kept so an
+// upload can be rolled back wholesale from the "Recent uploads" list — the
+// same delete-an-upload affordance the Upload tab has for daily reports.
+// `changes` is the reversal payload: one entry per affected client,
+// { code, existed, prev }. existed=false → the row was newly created (undo
+// deletes it); existed=true → `prev` holds the pre-upload name/rm/dealer/
+// branch (undo writes them back).
+model ClientUpload {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  fileName     String   @default("")
+  userId       String   @default("")
+  username     String   @default("")
+  createdCount Int      @default(0)
+  updatedCount Int      @default(0)
+  changes      Json     @default("[]")
+
+  @@index([createdAt])
 }
 
 // Immutable audit trail for all destructive / sensitive operations

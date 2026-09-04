@@ -34,12 +34,22 @@ export async function PUT(req) {
   }
 
   const records = parsed.data;
+  // This endpoint rewrites the whole table (inline edits, add, delete,
+  // dealer/RM rename all round-trip the full list). Preserve each surviving
+  // client's original `createdAt` so the Clients tab "Added" column isn't
+  // reset to now() every time an unrelated row is edited.
+  const existing = await prisma.masterClient.findMany({ select: { code: true, createdAt: true } });
+  const createdAtByCode = new Map(existing.map((r) => [r.code, r.createdAt]));
   await prisma.$transaction([
     prisma.masterClient.deleteMany({}),
     ...(records.length
       ? [
           prisma.masterClient.createMany({
-            data: records.map((r) => ({ ...r, code: r.code })),
+            data: records.map((r) => ({
+              ...r,
+              code: r.code,
+              ...(createdAtByCode.has(r.code) ? { createdAt: createdAtByCode.get(r.code) } : {}),
+            })),
           }),
         ]
       : []),
