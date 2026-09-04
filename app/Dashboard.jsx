@@ -11,7 +11,7 @@ import {
   Calendar, Trash2, Plus, Search, AlertTriangle, CheckCircle2,
   FileSpreadsheet, Building2, IndianRupee, Pencil, X, Check,
   ShieldCheck, Eye, ChevronUp, ChevronDown, ReceiptText, Layers, ListChecks, KeyRound, UserCog,
-  Download, FileSearch, FileBarChart2, Printer, Gauge
+  Download, FileSearch, FileBarChart2, Printer, Gauge, Settings
 } from "lucide-react";
 
 /* ---------- design tokens ---------- */
@@ -1249,6 +1249,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkPending, setBulkPending] = useState(null);
   const [exportOpen, setExportOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const [exportCols, setExportCols] = useState(Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, true])));
   const [brokerageByCode, setBrokerageByCode] = useState({});
   const [uploads, setUploads] = useState([]);
@@ -1464,6 +1465,9 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
               <button onClick={() => setExportOpen((o) => !o)} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: exportOpen ? TEAL_SOFT : "#fff", color: INK, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
                 <Download size={15} /> Export
               </button>
+              <button onClick={() => setManageOpen((o) => !o)} title="Upload history & rollback" style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 12px", borderRadius: 8, border: `1px solid ${LINE}`, background: manageOpen ? TEAL_SOFT : "#fff", color: INK, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                <Settings size={15} />
+              </button>
             </div>
           )}
         </div>
@@ -1593,12 +1597,15 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
         </Card>
       )}
 
-      {isAdmin && uploads.length > 0 && (
+      {isAdmin && manageOpen && (
         <Card style={{ padding: 18 }}>
           <SectionTitle>Recent uploads</SectionTitle>
           <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
             Each bulk upload can be rolled back in full — clients it added are removed and clients it changed are restored to their previous values.
           </div>
+          {uploads.length === 0 && (
+            <div style={{ fontSize: 13, color: INK_SOFT }}>No bulk uploads recorded yet.</div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {uploads.map((u) => (
               <div key={u.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "10px 12px", border: `1px solid ${LINE}`, borderRadius: 10, background: "#FAFBFC" }}>
@@ -1627,7 +1634,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
         </Card>
       )}
 
-      {isAdmin && addedDates.length > 0 && (
+      {isAdmin && manageOpen && addedDates.length > 0 && (
         <Card style={{ padding: 18 }}>
           <SectionTitle>Clients by added date</SectionTitle>
           <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
