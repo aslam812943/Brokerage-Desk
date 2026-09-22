@@ -5,5 +5,6 @@ export default withAuth({
 });
 
 export const config = {
-  matcher: ["/((?!login|api/auth|_next/static|_next/image|favicon.ico).*)"],
+  // Login endpoints must remain public so they can establish a session.
+  matcher: ["/((?!login|api/auth|api/mis-login|_next/static|_next/image|favicon.ico).*)"],
 };
