@@ -2492,7 +2492,8 @@ function UsersSection({ onWipeUsers, showToast }) {
   const [newViewerName, setNewViewerName] = useState("");
   const [assignments, setAssignments] = useState([]);
   const [assignmentDrafts, setAssignmentDrafts] = useState({});
-  const [savingAssignment, setSavingAssignment] = useState(null);
+  const [savingAssignments, setSavingAssignments] = useState({});
+  const assignmentRequests = useRef(new Set());
   const [loadError, setLoadError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -2509,7 +2510,6 @@ function UsersSection({ onWipeUsers, showToast }) {
       if (!res.ok || !optionsRes.ok) throw new Error("Couldn't load user assignments");
       setUsers(await res.json());
       setAssignments(await optionsRes.json());
-      setAssignmentDrafts({});
     } catch (e) {
       setLoadError("Couldn't load user assignments. Please retry.");
     }
@@ -2555,8 +2555,9 @@ function UsersSection({ onWipeUsers, showToast }) {
 
   const saveAssignment = async (u) => {
     const viewerName = assignmentDrafts[u.id] ?? u.assignment?.name;
-    if (!viewerName) return;
-    setSavingAssignment(u.id);
+    if (!viewerName || assignmentRequests.current.has(u.id)) return;
+    assignmentRequests.current.add(u.id);
+    setSavingAssignments((prev) => ({ ...prev, [u.id]: true }));
     try {
       const res = await fetch(`/api/users/${u.id}`, {
         method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" },
@@ -2565,10 +2566,20 @@ function UsersSection({ onWipeUsers, showToast }) {
       const data = await res.json().catch(() => null);
       if (!res.ok) { showToast(data?.error || "Couldn't save assignment", "red"); return; }
       showToast(`${u.username} assigned to ${data.viewerName}. Ask them to refresh their dashboard.`);
-      await load();
+      const assignment = assignments.find((a) => a.name === data.viewerName);
+      setUsers((prev) => prev.map((row) => row.id === u.id ? { ...row, viewerName: data.viewerName, assignment } : row));
+      setAssignmentDrafts((prev) => {
+        if (prev[u.id] !== undefined && prev[u.id] !== viewerName) return prev;
+        const next = { ...prev };
+        delete next[u.id];
+        return next;
+      });
     } catch {
       showToast("Couldn't save assignment", "red");
-    } finally { setSavingAssignment(null); }
+    } finally {
+      assignmentRequests.current.delete(u.id);
+      setSavingAssignments((prev) => { const next = { ...prev }; delete next[u.id]; return next; });
+    }
   };
 
   const copyTempPassword = async () => {
@@ -2652,7 +2663,7 @@ function UsersSection({ onWipeUsers, showToast }) {
                 <option value="VIEWER">Viewer</option>
                 <option value="ADMIN">Admin</option>
               </select>
-              {newRole === "VIEWER" && <select aria-label="Assigned dealer/RM for new user" value={newViewerName} onChange={(e) => setNewViewerName(e.target.value)} style={inputStyle}>
+              {newRole === "VIEWER" && <select aria-label="Assigned dealer/RM for new user" value={newViewerName} onChange={(e) => setNewViewerName(e.target.value)} style={{ ...inputStyle, width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }}>
                 <option value="">Select dealer/RM</option>
                 {assignments.map((a) => <option key={a.name} value={a.name}>{a.name} — {a.dealerClients} dealer / {a.rmClients} RM clients</option>)}
               </select>}
@@ -2672,42 +2683,51 @@ function UsersSection({ onWipeUsers, showToast }) {
         {loading ? (
           <div style={{ fontSize: 13, color: INK_SOFT }}>Loading…</div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table>
-              <thead><tr><th>Username</th><th>Role</th><th>Assigned dealer/RM</th><th>Status</th><th>Created</th><th></th></tr></thead>
-              <tbody>
-                {(users || []).map((u) => (
-                  <tr key={u.id}>
-                    <td style={{ fontWeight: 600 }}>{u.username}</td>
-                    <td>{u.role === "ADMIN" ? <Badge text="Admin" color={EMERALD} /> : <Badge text="Viewer" color={BLUE} />}</td>
-                    <td>{u.role === "ADMIN" ? "All data" : <>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <select aria-label={`Assigned dealer/RM for ${u.username}`} style={inputStyle}
-                          value={assignmentDrafts[u.id] ?? u.assignment?.name ?? ""}
-                          onChange={(e) => setAssignmentDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))}>
-                          <option value="">Assignment needed</option>
-                          {assignments.map((a) => <option key={a.name} value={a.name}>{a.name} — {a.dealerClients} dealer / {a.rmClients} RM clients</option>)}
-                        </select>
-                        <button onClick={() => saveAssignment(u)} disabled={savingAssignment !== null || !!loadError || !(assignmentDrafts[u.id] ?? u.assignment?.name)}>Save</button>
-                      </div>
-                      {!u.assignment && <div style={{ color: RED, marginTop: 4 }}>No matching dealer/RM{u.viewerName ? `: ${u.viewerName}` : ""}</div>}
-                      {u.assignment && !u.assignment.dealerClients && !u.assignment.rmClients && <div style={{ color: GOLD, marginTop: 4 }}>No clients assigned to this person yet</div>}
-                    </>}</td>
-                    <td>{u.mustChangePassword ? <Badge text="Pending first login" color={GOLD} /> : <span style={{ color: INK_SOFT, fontSize: 12 }}>Active</span>}</td>
-                    <td style={{ color: INK_SOFT }}>{new Date(u.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
-                    <td>
-                      <button
-                        onClick={() => resetPassword(u)}
-                        disabled={resettingId === u.id}
-                        style={{ border: "none", background: "none", cursor: resettingId === u.id ? "default" : "pointer", color: BLUE, fontSize: 12, fontWeight: 700, opacity: resettingId === u.id ? 0.6 : 1, padding: 0 }}
-                      >
-                        {resettingId === u.id ? "Resetting…" : "Reset password"}
+          <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+            {(users || []).map((u) => {
+              const selectedName = assignmentDrafts[u.id] ?? u.assignment?.name ?? "";
+              const selectedAssignment = assignments.find((a) => a.name === selectedName);
+              const saving = !!savingAssignments[u.id];
+              const changed = !!selectedName && selectedName !== u.viewerName;
+              return (
+                <article key={u.id} aria-label={`User account ${u.username}`} style={{ border: `1px solid ${LINE}`, borderRadius: 10, padding: 14, minWidth: 0, overflowWrap: "anywhere" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <strong style={{ fontSize: 14 }}>{u.username}</strong>
+                    <Badge text={u.role === "ADMIN" ? "Admin" : "Viewer"} color={u.role === "ADMIN" ? EMERALD : BLUE} />
+                    {u.mustChangePassword ? <Badge text="Pending first login" color={GOLD} /> : <span style={{ color: INK_SOFT, fontSize: 12 }}>Active</span>}
+                  </div>
+                  {u.role === "ADMIN" ? <div style={{ color: INK_SOFT, fontSize: 13 }}>Access to all data</div> : <>
+                    <label htmlFor={`assignment-${u.id}`} style={{ display: "block", color: INK_SOFT, fontSize: 12, marginBottom: 6 }}>Assigned dealer/RM</label>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", minWidth: 0 }}>
+                      <select id={`assignment-${u.id}`} aria-label={`Assigned dealer/RM for ${u.username}`}
+                        style={{ ...inputStyle, flex: "1 1 200px", width: "100%", minWidth: 0, maxWidth: "100%", boxSizing: "border-box" }}
+                        disabled={saving} value={selectedName}
+                        onChange={(e) => setAssignmentDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))}>
+                        <option value="">Select dealer/RM</option>
+                        {assignments.map((a) => <option key={a.name} value={a.name}>{a.name}</option>)}
+                      </select>
+                      <button aria-label={`Save assignment for ${u.username}`} onClick={() => saveAssignment(u)} disabled={saving || !!loadError || !changed}
+                        style={{ border: "none", borderRadius: 8, padding: "10px 16px", background: EMERALD, color: "#fff", fontWeight: 700, cursor: saving || !changed ? "default" : "pointer", opacity: saving || !!loadError || !changed ? 0.55 : 1 }}>
+                        {saving ? "Saving…" : "Save"}
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </div>
+                    {selectedAssignment && <div style={{ marginTop: 6, color: INK_SOFT, fontSize: 12 }}>
+                      {selectedAssignment.name} · {selectedAssignment.dealerClients} dealer / {selectedAssignment.rmClients} RM clients
+                    </div>}
+                    {assignmentDrafts[u.id] !== undefined && selectedName !== (u.assignment?.name ?? "") && <div style={{ marginTop: 4, color: GOLD, fontSize: 12 }}>Unsaved change</div>}
+                    {!u.assignment && <div style={{ color: RED, marginTop: 4, fontSize: 12 }}>No saved dealer/RM assignment{u.viewerName ? `: ${u.viewerName}` : ""}</div>}
+                    {selectedAssignment && !selectedAssignment.dealerClients && !selectedAssignment.rmClients && <div style={{ color: GOLD, marginTop: 4, fontSize: 12 }}>No clients assigned to this person yet</div>}
+                  </>}
+                  <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 10, marginTop: 12, fontSize: 12 }}>
+                    <span style={{ color: INK_SOFT }}>Created {new Date(u.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</span>
+                    <button onClick={() => resetPassword(u)} disabled={resettingId === u.id}
+                      style={{ border: "none", background: "none", cursor: "pointer", color: BLUE, fontSize: 12, fontWeight: 700, padding: 0 }}>
+                      {resettingId === u.id ? "Resetting…" : "Reset password"}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </Card>
