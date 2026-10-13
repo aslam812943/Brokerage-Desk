@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "../../../lib/prisma";
-import { requireSession, requireAdmin, resolveViewerScope } from "../../../lib/apiAuth";
+import { requireSession, requireAdmin } from "../../../lib/apiAuth";
 
 export async function GET() {
   const { session, response } = await requireSession();
   if (response) return response;
 
   if (session.user.role !== "ADMIN") {
-    const scope = await resolveViewerScope(session.user.name);
+    const scope = session.user.viewerScope;
     // A dealer login sees its own name here (used to seed the dealer
     // registry list client-side). An RM login isn't a dealer at all — the
     // dealer(s) tied to its own clients already surface separately, via the

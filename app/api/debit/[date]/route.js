@@ -32,7 +32,7 @@ export async function GET(req, { params }) {
   if (session.user.role === "ADMIN") return NextResponse.json(rows);
 
   const clients = await prisma.masterClient.findMany({
-    where: viewerClientWhere(session.user.name),
+    where: viewerClientWhere(session.user.viewerName),
     select: { code: true },
   });
   const allowedCodes = new Set(clients.map((c) => normCode(c.code)));

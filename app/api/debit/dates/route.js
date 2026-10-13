@@ -24,7 +24,7 @@ export async function GET() {
   // their own clients has a record — same scoping /api/debit applies today,
   // but this only pulls the two columns needed to compute it instead of full rows.
   const clients = await prisma.masterClient.findMany({
-    where: viewerClientWhere(session.user.name),
+    where: viewerClientWhere(session.user.viewerName),
     select: { code: true },
   });
   const allowedCodes = new Set(clients.map((c) => normCode(c.code)));

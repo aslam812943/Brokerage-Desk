@@ -18,7 +18,7 @@ export async function GET() {
 
   const isAdmin = session.user.role === "ADMIN";
   const rows = await prisma.masterClient.findMany(
-    isAdmin ? {} : { where: viewerClientWhere(session.user.name) }
+    isAdmin ? {} : { where: viewerClientWhere(session.user.viewerName) }
   );
   return NextResponse.json(rows);
 }

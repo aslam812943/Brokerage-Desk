@@ -5,21 +5,28 @@ import { prisma } from "../../../lib/prisma";
 import { requireAdmin } from "../../../lib/apiAuth";
 import { writeAudit } from "../../../lib/audit";
 import { generateTempPassword } from "../../../lib/generatePassword";
+import { listViewerAssignments, resolveViewerScope } from "../../../lib/viewerScope";
 
 export async function GET() {
   const { response } = await requireAdmin();
   if (response) return response;
 
   const rows = await prisma.user.findMany({
-    select: { id: true, username: true, role: true, mustChangePassword: true, createdAt: true },
+    select: { id: true, username: true, role: true, viewerName: true, mustChangePassword: true, createdAt: true },
     orderBy: { createdAt: "asc" },
   });
-  return NextResponse.json(rows);
+  const assignments = await listViewerAssignments(prisma);
+  const byName = new Map(assignments.map((a) => [a.name.toLowerCase(), a]));
+  return NextResponse.json(rows.map((u) => ({
+    ...u,
+    assignment: u.role === "ADMIN" ? null : byName.get((u.viewerName ?? u.username).toLowerCase()) ?? null,
+  })));
 }
 
 const createUserSchema = z.object({
   username: z.string().trim().min(3).max(64).regex(/^[a-zA-Z0-9._-]+$/, "Only letters, numbers, dot, underscore, hyphen"),
   role: z.enum(["ADMIN", "VIEWER"]).default("VIEWER"),
+  viewerName: z.string().trim().min(1).max(200).optional(),
 });
 
 // Creates a user with a server-generated temporary password. The plaintext
@@ -38,6 +45,12 @@ export async function POST(req) {
   }
 
   const username = parsed.data.username.toLowerCase();
+  let viewerName = null;
+  if (parsed.data.role === "VIEWER") {
+    const scope = await resolveViewerScope(prisma, parsed.data.viewerName);
+    if (!scope.matched) return NextResponse.json({ error: "Select an existing dealer/RM for this viewer." }, { status: 400 });
+    viewerName = scope.name;
+  }
   const existing = await prisma.user.findUnique({ where: { username } });
   if (existing) {
     return NextResponse.json({ error: "That username is already taken" }, { status: 409 });
@@ -46,7 +59,7 @@ export async function POST(req) {
   const tempPassword = generateTempPassword();
   const passwordHash = await bcrypt.hash(tempPassword, 12);
   const created = await prisma.user.create({
-    data: { username, passwordHash, role: parsed.data.role, mustChangePassword: true },
+    data: { username, passwordHash, role: parsed.data.role, viewerName, mustChangePassword: true },
     select: { id: true, username: true, role: true, createdAt: true },
   });
 
@@ -54,7 +67,7 @@ export async function POST(req) {
     userId: session.user.id,
     username: session.user.name,
     action: "CREATE_USER",
-    detail: `targetUsername=${username} role=${parsed.data.role}`,
+    detail: `targetUsername=${username} role=${parsed.data.role} viewerName=${viewerName ?? ""}`,
   });
 
   return NextResponse.json({ ...created, tempPassword }, { status: 201 });

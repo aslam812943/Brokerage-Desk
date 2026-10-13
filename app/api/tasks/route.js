@@ -18,16 +18,6 @@ async function ensureSlots(dealer, month) {
   return SLOTS.map((slot) => bySlot[slot] || { dealer, month, slot, text: "", done: false });
 }
 
-async function resolveOwnDealerName(username) {
-  const dealerMatch = await prisma.dealer.findFirst({ where: { name: { equals: username, mode: "insensitive" } } });
-  if (dealerMatch) return dealerMatch.name;
-  const clientMatch = await prisma.masterClient.findFirst({
-    where: { dealer: { equals: username, mode: "insensitive" } },
-    select: { dealer: true },
-  });
-  return clientMatch ? clientMatch.dealer : username;
-}
-
 export async function GET(req) {
   const { session, response } = await requireSession();
   if (response) return response;
@@ -37,7 +27,8 @@ export async function GET(req) {
   const isAdmin = session.user.role === "ADMIN";
 
   if (!isAdmin) {
-    const dealer = await resolveOwnDealerName(session.user.name);
+    if (session.user.viewerScope.kind !== "dealer") return NextResponse.json({ error: "Monthly tasks are only available to dealers" }, { status: 403 });
+    const dealer = session.user.viewerName;
     const tasks = await ensureSlots(dealer, month);
     return NextResponse.json({ month, dealer, tasks });
   }
@@ -104,7 +95,8 @@ export async function PATCH(req) {
     return NextResponse.json({ error: "Only the dealer can mark tasks done" }, { status: 403 });
   }
 
-  const dealer = await resolveOwnDealerName(session.user.name);
+  if (session.user.viewerScope.kind !== "dealer") return NextResponse.json({ error: "Monthly tasks are only available to dealers" }, { status: 403 });
+  const dealer = session.user.viewerName;
   const row = await prisma.dealerTask.upsert({
     where: { dealer_month_slot: { dealer, month, slot } },
     update: { done },

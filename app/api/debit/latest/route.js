@@ -15,7 +15,7 @@ export async function GET() {
   let allowedCodes = null;
   if (!isAdmin) {
     const clients = await prisma.masterClient.findMany({
-      where: viewerClientWhere(session.user.name),
+      where: viewerClientWhere(session.user.viewerName),
       select: { code: true },
     });
     allowedCodes = new Set(clients.map((c) => normCode(c.code)));

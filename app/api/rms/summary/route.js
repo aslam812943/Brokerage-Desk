@@ -19,7 +19,7 @@ export async function GET(req) {
   let allowedCodeNorms = null;
   if (!isAdmin) {
     const clients = await prisma.masterClient.findMany({
-      where: viewerClientWhere(session.user.name),
+      where: viewerClientWhere(session.user.viewerName),
       select: { codeNorm: true },
     });
     allowedCodeNorms = clients.map((c) => c.codeNorm).filter(Boolean);

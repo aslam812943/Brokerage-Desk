@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "../../../../lib/prisma";
-import { requireSession, resolveViewerScope } from "../../../../lib/apiAuth";
+import { requireSession } from "../../../../lib/apiAuth";
 
 function isoDate(y, m0, d) { return `${y}-${String(m0 + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
 
@@ -200,7 +200,7 @@ export async function GET() {
   const aggByPerson = Object.fromEntries(personRows.map((r) => [r.person.toLowerCase(), r]));
 
   if (!isAdmin) {
-    const scope = await resolveViewerScope(session.user.name);
+    const scope = session.user.viewerScope;
     return NextResponse.json({
       latestDate,
       prevDate,

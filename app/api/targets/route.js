@@ -29,12 +29,12 @@ export async function GET() {
     // its own salary (needed to compute its own Monthly Target as
     // salary × incentiveMultiplier), never any other dealer's figure.
     const matchKey = Object.keys(dealerSalary || {}).find(
-      (k) => k.toLowerCase() === session.user.name.toLowerCase()
+      (k) => k.toLowerCase() === session.user.viewerName.toLowerCase()
     );
     const ownSalary = matchKey ? dealerSalary[matchKey] : 0;
     return NextResponse.json({
       monthly, kotakSharePct, rmSplitPct, incentiveMultiplier,
-      dealerSalary: { [matchKey || session.user.name]: ownSalary },
+      dealerSalary: { [matchKey || session.user.viewerName]: ownSalary },
     });
   }
 

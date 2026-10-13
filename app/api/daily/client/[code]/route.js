@@ -16,7 +16,7 @@ export async function GET(req, { params }) {
 
   if (session.user.role !== "ADMIN") {
     const client = await prisma.masterClient.findUnique({ where: { codeNorm }, select: { dealer: true, rm: true } });
-    const username = session.user.name.toLowerCase();
+    const username = session.user.viewerName.toLowerCase();
     const owned = client && (client.dealer.toLowerCase() === username || client.rm.toLowerCase() === username);
     if (!owned) {
       return NextResponse.json([]);

@@ -16,6 +16,9 @@ enum Role {
 model User {
   id                 String   @id @default(cuid())
   username           String   @unique
+  // Admin-selected identity in Dealer/Rm/MasterClient; independent of login.
+  // Null preserves exact, case-insensitive username matching for legacy users.
+  viewerName         String?
   passwordHash       String
   role               Role     @default(VIEWER)
   mustChangePassword Boolean  @default(false)

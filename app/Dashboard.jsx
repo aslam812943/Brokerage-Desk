@@ -437,6 +437,8 @@ export default function App() {
   // for an RM login. Defaults to "dealer" until it loads, matching every
   // VIEWER account's behavior before RM logins existed.
   const [viewerKind, setViewerKind] = useState("dealer");
+  const [viewerScope, setViewerScope] = useState(null);
+  const [scopeLoaded, setScopeLoaded] = useState(false);
 
   const showToast = (msg, tone = "emerald") => { setToast({ msg, tone }); setTimeout(() => setToast(null), 3200); };
   const isAdmin = role === "admin";
@@ -446,17 +448,21 @@ export default function App() {
   // gate the whole app behind them being ready.
   useEffect(() => {
     (async () => {
+      const scope = await apiGet("/api/viewer-scope").catch(() => null);
+      setViewerScope(scope);
+      setScopeLoaded(true);
+      if (!scope || (!scope.isAdmin && !scope.matched)) return;
+      if (!scope.isAdmin) setViewerKind(scope.kind === "rm" ? "rm" : "dealer");
       // /api/daily/dates and /api/debit/latest are both cheap — bounded by
       // dates/clients, not by transaction volume — so both load eagerly
       // instead of waiting on the lazy full-history fetch below.
-      const [m, dr, rr, t, dates, latestDebit, scope] = await Promise.all([
+      const [m, dr, rr, t, dates, latestDebit] = await Promise.all([
         storageGet("master-clients"),
         storageGet("dealers-list"),
         storageGet("rms-list"),
         storageGet("targets"),
         apiGet("/api/daily/dates"),
         apiGet("/api/debit/latest"),
-        apiGet("/api/viewer-scope"),
       ]);
       if (m) setMaster(m);
       if (dr) setDealerRegistry(dr);
@@ -464,7 +470,6 @@ export default function App() {
       if (t) setTargets(t);
       if (dates) setDailyDates([...dates].sort());
       if (latestDebit) setLatestDebitByCode(Object.fromEntries(latestDebit.map((r) => [normCode(r.code), r.debit])));
-      if (scope && !scope.isAdmin) setViewerKind(scope.kind === "rm" ? "rm" : "dealer");
     })();
   }, []);
 
@@ -694,6 +699,11 @@ export default function App() {
     showToast(data.count ? `Removed ${data.count} other user account(s)` : "No other user accounts to remove", "gold");
   };
 
+  // Keep hooks above the password-change return so session updates never
+  // change the number of hooks called between renders.
+  const isRmViewer = !isAdmin && viewerKind === "rm";
+  useEffect(() => { if (isRmViewer && tab === "tasks") setTab("dashboard"); }, [isRmViewer, tab]);
+
   if (mustChangePassword) {
     return (
       <ForcedPasswordChange
@@ -703,6 +713,19 @@ export default function App() {
           showToast("Password updated");
         }}
       />
+    );
+  }
+
+  if (!scopeLoaded || !viewerScope || (!viewerScope.isAdmin && !viewerScope.matched)) {
+    return (
+      <div style={{ padding: 32, maxWidth: 560, margin: "60px auto", fontFamily: "var(--font-inter), sans-serif" }}>
+        <h2>{!scopeLoaded ? "Loading account…" : !viewerScope ? "Couldn't load your account" : "Account assignment needed"}</h2>
+        {scopeLoaded && <>
+          <p>{!viewerScope ? "Please retry. If this continues, contact your administrator." : `Your login ${username} is not linked to an existing dealer or RM. Ask your administrator to select your assigned dealer/RM in Targets → User accounts.`}</p>
+          <button onClick={() => window.location.reload()} style={inputStyle}>Retry</button>{" "}
+          <button onClick={() => signOut({ callbackUrl: "/login" })} style={inputStyle}>Sign out</button>
+        </>}
+      </div>
     );
   }
 
@@ -721,9 +744,7 @@ export default function App() {
   // Monthly Tasks is a per-dealer checklist admins manage by dealer name —
   // an RM login has no tasks of its own there, so the tab is hidden rather
   // than showing an empty, admin-invisible checklist keyed to its username.
-  const isRmViewer = !isAdmin && viewerKind === "rm";
   const visibleNav = NAV.filter((n) => (!n.adminOnly || isAdmin) && !(n.id === "tasks" && isRmViewer));
-  useEffect(() => { if (isRmViewer && tab === "tasks") setTab("dashboard"); }, [isRmViewer, tab]);
 
   return (
     <div className="dt-root" style={{ background: BG, minHeight: 600, fontFamily: "var(--font-inter), sans-serif", color: INK, borderRadius: 16 }}>
@@ -783,7 +804,7 @@ export default function App() {
               </button>
             ))}
           </div>
-          <RoleSwitch role={role} username={username} viewerKind={viewerKind} />
+          <RoleSwitch role={role} username={username} viewerKind={viewerKind} viewerName={viewerScope.name} />
         </div>
       </div>
 
@@ -841,7 +862,7 @@ export default function App() {
   );
 }
 
-function RoleSwitch({ role, username, viewerKind }) {
+function RoleSwitch({ role, username, viewerKind, viewerName }) {
   const [open, setOpen] = useState(false);
   const [changingPw, setChangingPw] = useState(false);
   const roleLabel = role === "admin" ? "Admin" : viewerKind === "rm" ? "RM" : "Dealer";
@@ -854,6 +875,7 @@ function RoleSwitch({ role, username, viewerKind }) {
         <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", background: "#fff", borderRadius: 10, boxShadow: "0 12px 30px rgba(0,0,0,0.18)", padding: 6, width: 210, zIndex: 40 }}>
           <div style={{ padding: "8px 10px", fontSize: 12.5, color: INK_SOFT }}>
             Signed in as <strong style={{ color: INK }}>{username}</strong> — {role === "admin" ? "full edit access" : "read-only dashboard"}
+            {role !== "admin" && viewerName && <div style={{ marginTop: 6 }}>Assigned to <strong style={{ color: INK }}>{viewerName}</strong></div>}
           </div>
           <button onClick={() => { setChangingPw(true); setOpen(false); }} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", fontSize: 13, fontWeight: 600, color: INK, textAlign: "left" }}>
             <KeyRound size={14} /> Change password
@@ -2467,17 +2489,29 @@ function UsersSection({ onWipeUsers, showToast }) {
   const [adding, setAdding] = useState(false);
   const [newUsername, setNewUsername] = useState("");
   const [newRole, setNewRole] = useState("VIEWER");
+  const [newViewerName, setNewViewerName] = useState("");
+  const [assignments, setAssignments] = useState([]);
+  const [assignmentDrafts, setAssignmentDrafts] = useState({});
+  const [savingAssignment, setSavingAssignment] = useState(null);
+  const [loadError, setLoadError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
   const [reveal, setReveal] = useState(null); // { username, tempPassword }
 
   const load = async () => {
     setLoading(true);
+    setLoadError("");
     try {
-      const res = await fetch("/api/users", { credentials: "same-origin" });
-      setUsers(res.ok ? await res.json() : []);
+      const [res, optionsRes] = await Promise.all([
+        fetch("/api/users", { credentials: "same-origin" }),
+        fetch("/api/users/assignments", { credentials: "same-origin" }),
+      ]);
+      if (!res.ok || !optionsRes.ok) throw new Error("Couldn't load user assignments");
+      setUsers(await res.json());
+      setAssignments(await optionsRes.json());
+      setAssignmentDrafts({});
     } catch (e) {
-      setUsers([]);
+      setLoadError("Couldn't load user assignments. Please retry.");
     }
     setLoading(false);
   };
@@ -2492,13 +2526,14 @@ function UsersSection({ onWipeUsers, showToast }) {
   const submitNewUser = async () => {
     setCreateError("");
     if (!newUsername.trim()) return;
+    if (newRole === "VIEWER" && !newViewerName) { setCreateError("Select a dealer/RM for this viewer."); return; }
     setCreating(true);
     try {
       const res = await fetch("/api/users", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: newUsername.trim(), role: newRole }),
+        body: JSON.stringify({ username: newUsername.trim(), role: newRole, ...(newRole === "VIEWER" ? { viewerName: newViewerName } : {}) }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
@@ -2508,6 +2543,7 @@ function UsersSection({ onWipeUsers, showToast }) {
       setReveal({ username: data.username, tempPassword: data.tempPassword });
       setNewUsername("");
       setNewRole("VIEWER");
+      setNewViewerName("");
       setAdding(false);
       load();
     } catch (e) {
@@ -2515,6 +2551,24 @@ function UsersSection({ onWipeUsers, showToast }) {
     } finally {
       setCreating(false);
     }
+  };
+
+  const saveAssignment = async (u) => {
+    const viewerName = assignmentDrafts[u.id] ?? u.assignment?.name;
+    if (!viewerName) return;
+    setSavingAssignment(u.id);
+    try {
+      const res = await fetch(`/api/users/${u.id}`, {
+        method: "PUT", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ viewerName }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) { showToast(data?.error || "Couldn't save assignment", "red"); return; }
+      showToast(`${u.username} assigned to ${data.viewerName}. Ask them to refresh their dashboard.`);
+      await load();
+    } catch {
+      showToast("Couldn't save assignment", "red");
+    } finally { setSavingAssignment(null); }
   };
 
   const copyTempPassword = async () => {
@@ -2578,6 +2632,10 @@ function UsersSection({ onWipeUsers, showToast }) {
             <Plus size={15} /> Add user
           </button>
         </div>
+        {loadError && <p role="alert" style={{ color: RED }}>{loadError} <button onClick={load}>Retry</button></p>}
+        {!loading && !loadError && (users || []).some((u) => u.role === "VIEWER" && !u.assignment) && (
+          <p role="alert" style={{ color: GOLD }}>Some viewers need a dealer/RM assignment before they can see their data. Select the correct person and save below.</p>
+        )}
 
         {adding && (
           <div style={{ marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${LINE}` }}>
@@ -2594,14 +2652,18 @@ function UsersSection({ onWipeUsers, showToast }) {
                 <option value="VIEWER">Viewer</option>
                 <option value="ADMIN">Admin</option>
               </select>
-              <button onClick={submitNewUser} disabled={creating || !newUsername.trim()} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: creating || !newUsername.trim() ? "#B7E4CE" : EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: creating || !newUsername.trim() ? "not-allowed" : "pointer" }}>
+              {newRole === "VIEWER" && <select aria-label="Assigned dealer/RM for new user" value={newViewerName} onChange={(e) => setNewViewerName(e.target.value)} style={inputStyle}>
+                <option value="">Select dealer/RM</option>
+                {assignments.map((a) => <option key={a.name} value={a.name}>{a.name} — {a.dealerClients} dealer / {a.rmClients} RM clients</option>)}
+              </select>}
+              <button onClick={submitNewUser} disabled={creating || loading || !!loadError || !newUsername.trim() || (newRole === "VIEWER" && !newViewerName)} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
                 {creating ? "Creating…" : "Create"}
               </button>
               {createError && <span style={{ fontSize: 12.5, color: RED, fontWeight: 600 }}>{createError}</span>}
             </div>
             {newRole === "VIEWER" && (
               <div style={{ fontSize: 12, color: INK_SOFT, marginTop: 8 }}>
-                A Viewer's username must match an existing Dealer or RM name (case-insensitive) — that's what scopes their login to that dealer's or that RM's own clients and brokerage.
+                Choose the person whose clients and brokerage this viewer can access. The login username can be different. If the person is missing, add their Dealer/RM record first.
               </div>
             )}
           </div>
@@ -2612,12 +2674,25 @@ function UsersSection({ onWipeUsers, showToast }) {
         ) : (
           <div style={{ overflowX: "auto" }}>
             <table>
-              <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
+              <thead><tr><th>Username</th><th>Role</th><th>Assigned dealer/RM</th><th>Status</th><th>Created</th><th></th></tr></thead>
               <tbody>
                 {(users || []).map((u) => (
                   <tr key={u.id}>
                     <td style={{ fontWeight: 600 }}>{u.username}</td>
                     <td>{u.role === "ADMIN" ? <Badge text="Admin" color={EMERALD} /> : <Badge text="Viewer" color={BLUE} />}</td>
+                    <td>{u.role === "ADMIN" ? "All data" : <>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <select aria-label={`Assigned dealer/RM for ${u.username}`} style={inputStyle}
+                          value={assignmentDrafts[u.id] ?? u.assignment?.name ?? ""}
+                          onChange={(e) => setAssignmentDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))}>
+                          <option value="">Assignment needed</option>
+                          {assignments.map((a) => <option key={a.name} value={a.name}>{a.name} — {a.dealerClients} dealer / {a.rmClients} RM clients</option>)}
+                        </select>
+                        <button onClick={() => saveAssignment(u)} disabled={savingAssignment !== null || !!loadError || !(assignmentDrafts[u.id] ?? u.assignment?.name)}>Save</button>
+                      </div>
+                      {!u.assignment && <div style={{ color: RED, marginTop: 4 }}>No matching dealer/RM{u.viewerName ? `: ${u.viewerName}` : ""}</div>}
+                      {u.assignment && !u.assignment.dealerClients && !u.assignment.rmClients && <div style={{ color: GOLD, marginTop: 4 }}>No clients assigned to this person yet</div>}
+                    </>}</td>
                     <td>{u.mustChangePassword ? <Badge text="Pending first login" color={GOLD} /> : <span style={{ color: INK_SOFT, fontSize: 12 }}>Active</span>}</td>
                     <td style={{ color: INK_SOFT }}>{new Date(u.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</td>
                     <td>

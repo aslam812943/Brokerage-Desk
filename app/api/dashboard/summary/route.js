@@ -28,7 +28,7 @@ export async function GET(req) {
   let allowedCodeNorms = null;
   if (!isAdmin) {
     const clients = await prisma.masterClient.findMany({
-      where: viewerClientWhere(session.user.name),
+      where: viewerClientWhere(session.user.viewerName),
       select: { codeNorm: true },
     });
     allowedCodeNorms = clients.map((c) => c.codeNorm).filter(Boolean);
@@ -109,8 +109,8 @@ export async function GET(req) {
   const netExpr = isAdmin
     ? Prisma.sql`"netRaw"`
     : Prisma.sql`(CASE
-        WHEN lower(dealer) = lower(${session.user.name}) THEN "netRaw" * "dealerPct" / 100.0
-        WHEN lower(rm) = lower(${session.user.name}) THEN "netRaw" * "rmPct" / 100.0
+        WHEN lower(dealer) = lower(${session.user.viewerName}) THEN "netRaw" * "dealerPct" / 100.0
+        WHEN lower(rm) = lower(${session.user.viewerName}) THEN "netRaw" * "rmPct" / 100.0
         ELSE 0
       END)`;
 

@@ -21,7 +21,7 @@ function getClientIp(req) {
 // this is how a newly-created account replaces its temporary password on
 // first login, and how anyone can rotate their own password afterwards.
 export async function PUT(req) {
-  const { session, response } = await requireSession();
+  const { session, response } = await requireSession({ allowUnmapped: true });
   if (response) return response;
 
   const body = await req.json().catch(() => null);
