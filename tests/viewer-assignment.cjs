@@ -193,6 +193,7 @@ test("monthly tasks use the assigned dealer and reject RM-only accounts", async 
   const f = await fixture();
   const lookups = [];
   f.db.dealerTask = { findMany: async ({ where }) => { lookups.push(where.dealer); return []; } };
+  f.db.dealerProductTask = { findMany: async ({ where }) => { assert.equal(where.dealer, "THILEEPAN V"); return []; } };
   const route = await load("app/api/tasks/route.js", f.routeMocks("../../../lib"));
   const request = { url: "https://example.test/api/tasks?month=2026-10" };
   const data = await (await route.GET(request)).json();
@@ -200,6 +201,36 @@ test("monthly tasks use the assigned dealer and reject RM-only accounts", async 
   assert.deepEqual(lookups, ["THILEEPAN V"]);
   f.accounts[0].viewerName = "RM ONLY";
   assert.equal((await route.GET(request)).status, 403);
+});
+
+test("product closures save under the assigned dealer, ignore forged ownership, and allow multiple entries", async () => {
+  const f = await fixture();
+  const saved = [];
+  f.db.dealerProductTask = { create: async ({ data }) => {
+    const row = { id: String(saved.length + 1), ...plain(data) };
+    saved.push(row);
+    return row;
+  } };
+  const route = await load("app/api/tasks/route.js", f.routeMocks("../../../lib"));
+  const request = { json: async () => ({ month: "2026-10", product: "demat", notes: " Closure notes ", dealer: "RASISH" }) };
+  for (let i = 0; i < 2; i++) {
+    const response = await route.POST(request);
+    assert.equal(response.status, 201);
+    assert.equal((await response.json()).dealer, "THILEEPAN V");
+  }
+  assert.equal(saved.length, 2);
+  assert.equal(saved[0].notes, "Closure notes");
+  assert.equal((await route.POST({ json: async () => ({ month: "2026-10", product: "unknown" }) })).status, 400);
+  f.setActor("admin");
+  assert.equal((await route.POST(request)).status, 403);
+  f.setActor(null);
+  assert.equal((await route.POST(request)).status, 401);
+  f.setActor("viewer");
+  f.accounts[0].viewerName = "RM ONLY";
+  assert.equal((await route.POST(request)).status, 403);
+  f.accounts[0].viewerName = "UNKNOWN";
+  assert.equal((await route.POST(request)).status, 403);
+  assert.equal(saved.length, 2, "unauthorized requests must not insert rows");
 });
 
 test("MIS selects the assigned person's aggregate instead of the login name", async () => {

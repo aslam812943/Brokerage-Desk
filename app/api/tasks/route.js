@@ -124,7 +124,8 @@ export async function POST(req) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid product entry", details: parsed.error.flatten() }, { status: 400 });
   }
-  const dealer = await resolveOwnDealerName(session.user.name);
+  if (session.user.viewerScope.kind !== "dealer") return NextResponse.json({ error: "Monthly tasks are only available to dealers" }, { status: 403 });
+  const dealer = session.user.viewerName;
   const row = await prisma.dealerProductTask.create({ data: { dealer, ...parsed.data } });
   return NextResponse.json(row, { status: 201 });
 }
