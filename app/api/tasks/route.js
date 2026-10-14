@@ -5,6 +5,16 @@ import { requireSession, requireAdmin } from "../../../lib/apiAuth";
 
 const MONTH_RE = /^\d{4}-\d{2}$/;
 const SLOTS = [1, 2, 3];
+const PRODUCTS = [
+  "reactivation",
+  "demat",
+  "mutual_fund_sip",
+  "mutual_fund_lumpsum",
+  "privilege_account",
+  "corporate",
+  "iepf",
+  "ra_package",
+];
 
 function currentMonth() {
   const d = new Date();
@@ -29,23 +39,39 @@ export async function GET(req) {
   if (!isAdmin) {
     if (session.user.viewerScope.kind !== "dealer") return NextResponse.json({ error: "Monthly tasks are only available to dealers" }, { status: 403 });
     const dealer = session.user.viewerName;
-    const tasks = await ensureSlots(dealer, month);
-    return NextResponse.json({ month, dealer, tasks });
+    const [tasks, productRows] = await Promise.all([
+      ensureSlots(dealer, month),
+      prisma.dealerProductTask.findMany({ where: { dealer, month }, orderBy: { createdAt: "desc" } }),
+    ]);
+    return NextResponse.json({ month, dealer, tasks, productEntries: productRows });
   }
 
   const dealerRows = await prisma.dealer.findMany({ orderBy: { name: "asc" } });
   const clientDealers = await prisma.masterClient.findMany({ where: { dealer: { not: "" } }, select: { dealer: true }, distinct: ["dealer"] });
   const dealerNames = [...new Set([...dealerRows.map((r) => r.name), ...clientDealers.map((r) => r.dealer)])].sort();
 
-  const allTasks = await prisma.dealerTask.findMany({ where: { month } });
+  const [allTasks, allProductTasks] = await Promise.all([
+    prisma.dealerTask.findMany({ where: { month } }),
+    prisma.dealerProductTask.findMany({ where: { month }, orderBy: { createdAt: "desc" } }),
+  ]);
   const byDealer = {};
-  for (const name of dealerNames) byDealer[name] = SLOTS.map((slot) => ({ dealer: name, month, slot, text: "", done: false }));
+  const productEntriesByDealer = {};
+  for (const name of dealerNames) {
+    byDealer[name] = SLOTS.map((slot) => ({ dealer: name, month, slot, text: "", done: false }));
+    productEntriesByDealer[name] = [];
+  }
   for (const t of allTasks) {
     if (!byDealer[t.dealer]) byDealer[t.dealer] = SLOTS.map((slot) => ({ dealer: t.dealer, month, slot, text: "", done: false }));
     byDealer[t.dealer][t.slot - 1] = t;
   }
 
-  return NextResponse.json({ month, dealers: byDealer });
+  for (const row of allProductTasks) {
+    if (!productEntriesByDealer[row.dealer]) productEntriesByDealer[row.dealer] = [];
+    productEntriesByDealer[row.dealer].push(row);
+    if (!byDealer[row.dealer]) byDealer[row.dealer] = SLOTS.map((slot) => ({ dealer: row.dealer, month, slot, text: "", done: false }));
+  }
+
+  return NextResponse.json({ month, dealers: byDealer, productEntries: productEntriesByDealer });
 }
 
 const textSchema = z.object({
@@ -79,6 +105,29 @@ const doneSchema = z.object({
   slot: z.number().int().min(1).max(3),
   done: z.boolean(),
 });
+
+const productSchema = z.object({
+  month: z.string().regex(MONTH_RE),
+  product: z.enum(PRODUCTS),
+  notes: z.string().trim().max(1000).default(""),
+});
+
+export async function POST(req) {
+  const { session, response } = await requireSession();
+  if (response) return response;
+  if (session.user.role === "ADMIN") {
+    return NextResponse.json({ error: "Only the dealer can add product closures" }, { status: 403 });
+  }
+
+  const body = await req.json().catch(() => null);
+  const parsed = productSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid product entry", details: parsed.error.flatten() }, { status: 400 });
+  }
+  const dealer = await resolveOwnDealerName(session.user.name);
+  const row = await prisma.dealerProductTask.create({ data: { dealer, ...parsed.data } });
+  return NextResponse.json(row, { status: 201 });
+}
 
 export async function PATCH(req) {
   const { session, response } = await requireSession();

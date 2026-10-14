@@ -105,6 +105,20 @@ model DealerTask {
   @@index([dealer, month])
 }
 
+// One product closure logged by a dealer. Multiple entries for the same
+// product/month are allowed; each keeps its own notes and creation time.
+model DealerProductTask {
+  id        String   @id @default(cuid())
+  dealer    String
+  month     String
+  product   String
+  notes     String   @default("")
+  createdAt DateTime @default(now())
+
+  @@index([dealer, month])
+  @@index([month, product])
+}
+
 // Admin-editable NSE/BSE trading holiday calendar — used to compute each
 // dealer's Daily Target (monthly target / trading days in the month) on the
 // MIS tab. Ships empty; dates aren't seeded since lunar-calendar holidays

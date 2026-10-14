@@ -809,7 +809,7 @@ export default function App() {
       </div>
 
       <div className="dt-content" style={{ padding: 22 }}>
-        {tab === "dashboard" && <Dashboard master={master} targets={targets} />}
+        {tab === "dashboard" && <Dashboard master={master} targets={targets} isAdmin={isAdmin} />}
         {tab === "mis" && <MisTab isAdmin={isAdmin} showToast={showToast} />}
         {tab === "clients" && (
           <ClientsTab
@@ -977,7 +977,7 @@ function ForcedPasswordChange({ username, onDone }) {
 // "Today's upload" detail table needs row-level data, and that's scoped to
 // one date via /api/daily/[date] (Phase 1), joined against the already-loaded
 // (small) client registry.
-function Dashboard({ master, targets }) {
+function Dashboard({ master, targets, isAdmin }) {
   const [period, setPeriod] = useState("month");
   const [todaySearch, setTodaySearch] = useState("");
   const [summary, setSummary] = useState(null);
@@ -1035,6 +1035,7 @@ function Dashboard({ master, targets }) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         <EmptyState icon={UploadCloud} title="No data uploaded yet" text="Head to Upload to add your first day's brokerage report — the dashboard fills in automatically." />
+        <TasksSummaryCard isAdmin={isAdmin} />
       </div>
     );
   }
@@ -1071,6 +1072,8 @@ function Dashboard({ master, targets }) {
           <AlertTriangle size={15} /> {fmtINR(unmapped.value)} of brokerage in this period belongs to clients with no dealer mapped yet — not a real dealer, just clients waiting to be assigned in Clients.
         </div>
       )}
+
+      <TasksSummaryCard isAdmin={isAdmin} />
 
       <Card style={{ padding: 18 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
@@ -3366,10 +3369,55 @@ function monthLabel(key) {
   return `${MONTH_NAMES[m - 1]} ${y}`;
 }
 
+const MONTHLY_PRODUCTS = [
+  { key: "reactivation", label: "Reactivation" },
+  { key: "demat", label: "Demat" },
+  { key: "mutual_fund_sip", label: "Mutual Fund SIP" },
+  { key: "mutual_fund_lumpsum", label: "Mutual Fund Lumpsum" },
+  { key: "privilege_account", label: "Privilege Account" },
+  { key: "corporate", label: "Corporate" },
+  { key: "iepf", label: "IEPF" },
+  { key: "ra_package", label: "RA Package" },
+];
+const PRODUCT_LABELS = Object.fromEntries(MONTHLY_PRODUCTS.map((product) => [product.key, product.label]));
+
 async function fetchTasks(month) {
   const res = await fetch(`/api/tasks?month=${month}`, { credentials: "same-origin" });
   if (!res.ok) return null;
   return res.json();
+}
+
+function ProductEntryList({ entries }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      {entries.map((entry) => (
+        <div key={entry.id} style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, border: `1px solid ${LINE}`, borderRadius: 8, padding: "9px 10px", background: "#FAFBFC" }}>
+          <div>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{PRODUCT_LABELS[entry.product] || entry.product}</div>
+            <div style={{ fontSize: 11.5, color: entry.notes ? INK_SOFT : "#B7BCC5", marginTop: 3, whiteSpace: "pre-wrap" }}>{entry.notes || "No notes"}</div>
+          </div>
+          {entry.createdAt && <span style={{ fontSize: 10.5, color: "#9AA1AC", whiteSpace: "nowrap" }}>{new Date(entry.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProductEntriesModal({ title, entries, onClose }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(14,20,32,.48)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={onClose}>
+      <div onClick={(event) => event.stopPropagation()} style={{ width: "100%", maxWidth: 620 }}>
+        <Card style={{ padding: 20, maxHeight: "80vh", overflowY: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14 }}>
+            <div><div style={{ fontSize: 15, fontWeight: 800 }}>{title}</div><div style={{ fontSize: 12, color: INK_SOFT, marginTop: 3 }}>{entries.length} entr{entries.length === 1 ? "y" : "ies"}</div></div>
+            <button onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", color: INK_SOFT, cursor: "pointer" }}><X size={18} /></button>
+          </div>
+          <ProductEntryList entries={entries} />
+          {entries.length === 0 && <div style={{ fontSize: 13, color: "#B7BCC5", padding: 12 }}>No entries.</div>}
+        </Card>
+      </div>
+    </div>
+  );
 }
 
 function TasksTab({ isAdmin, showToast }) {
@@ -3377,17 +3425,42 @@ function TasksTab({ isAdmin, showToast }) {
   const [loading, setLoading] = useState(true);
   const [own, setOwn] = useState(null);
   const [byDealer, setByDealer] = useState(null);
+  const [productEntriesByDealer, setProductEntriesByDealer] = useState(null);
   const [dealerFilter, setDealerFilter] = useState("");
   const [editDrafts, setEditDrafts] = useState({});
+  const [productDraft, setProductDraft] = useState({ product: MONTHLY_PRODUCTS[0].key, notes: "" });
+  const [addingProduct, setAddingProduct] = useState(false);
 
   const load = async () => {
     setLoading(true);
     const data = await fetchTasks(month);
     if (data) {
-      if (isAdmin) setByDealer(data.dealers || {});
+      if (isAdmin) {
+        setByDealer(data.dealers || {});
+        setProductEntriesByDealer(data.productEntries || {});
+      }
       else { setOwn(data); }
     }
     setLoading(false);
+  };
+
+  const addProductEntry = async () => {
+    setAddingProduct(true);
+    const res = await fetch("/api/tasks", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ month, product: productDraft.product, notes: productDraft.notes }),
+    });
+    if (res.ok) {
+      const saved = await res.json();
+      setOwn((prev) => ({ ...prev, productEntries: [saved, ...(prev.productEntries || [])] }));
+      setProductDraft((prev) => ({ ...prev, notes: "" }));
+      showToast(`Added ${PRODUCT_LABELS[saved.product]}`);
+    } else {
+      showToast("Couldn't add product entry", "red");
+    }
+    setAddingProduct(false);
   };
 
   useEffect(() => { load(); }, [month, isAdmin]);
@@ -3440,9 +3513,10 @@ function TasksTab({ isAdmin, showToast }) {
 
   if (!isAdmin) {
     const tasks = own?.tasks || [];
+    const productEntries = own?.productEntries || [];
     const doneCount = tasks.filter((t) => t.done).length;
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 640 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 760 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <SectionTitle>Your monthly tasks — {monthLabel(month)}</SectionTitle>
           {monthPicker}
@@ -3474,6 +3548,21 @@ function TasksTab({ isAdmin, showToast }) {
             ))}
           </div>
         </Card>
+        <Card style={{ padding: 18 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, gap: 12 }}>
+            <SectionTitle>Product closures</SectionTitle>
+            <span style={{ fontSize: 12.5, color: INK_SOFT }}>{productEntries.length} entr{productEntries.length === 1 ? "y" : "ies"}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(190px, .7fr) minmax(260px, 1.5fr) auto", gap: 8, alignItems: "start", marginBottom: 14 }}>
+            <select value={productDraft.product} onChange={(e) => setProductDraft((prev) => ({ ...prev, product: e.target.value }))} style={inputStyle}>
+              {MONTHLY_PRODUCTS.map((product) => <option key={product.key} value={product.key}>{product.label}</option>)}
+            </select>
+            <textarea value={productDraft.notes} onChange={(e) => setProductDraft((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Closure notes" maxLength={1000} rows={2} style={{ ...inputStyle, resize: "vertical", minHeight: 58 }} />
+            <button disabled={addingProduct} onClick={addProductEntry} style={{ border: "none", background: BLUE, color: "#fff", borderRadius: 8, padding: "10px 14px", cursor: addingProduct ? "wait" : "pointer", fontSize: 12.5, fontWeight: 700 }}>{addingProduct ? "Adding…" : "Add entry"}</button>
+          </div>
+          <ProductEntryList entries={productEntries} />
+          {productEntries.length === 0 && <div style={{ fontSize: 12.5, color: "#B7BCC5" }}>No product closures entered for this month.</div>}
+        </Card>
       </div>
     );
   }
@@ -3499,6 +3588,7 @@ function TasksTab({ isAdmin, showToast }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {filteredDealers.map((dealer) => {
           const tasks = byDealer[dealer];
+          const productEntries = productEntriesByDealer?.[dealer] || [];
           const doneCount = tasks.filter((t) => t.done).length;
           return (
             <Card key={dealer} style={{ padding: 16 }}>
@@ -3530,6 +3620,11 @@ function TasksTab({ isAdmin, showToast }) {
                   );
                 })}
               </div>
+              <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 14, paddingTop: 12 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>Product closures ({productEntries.length})</div>
+                <ProductEntryList entries={productEntries} />
+                {productEntries.length === 0 && <div style={{ fontSize: 11.5, color: "#B7BCC5" }}>No entries this month.</div>}
+              </div>
             </Card>
           );
         })}
@@ -3542,13 +3637,20 @@ function TasksSummaryCard({ isAdmin }) {
   const [loading, setLoading] = useState(true);
   const [own, setOwn] = useState(null);
   const [byDealer, setByDealer] = useState(null);
+  const [productEntriesByDealer, setProductEntriesByDealer] = useState(null);
+  const [selectedEntries, setSelectedEntries] = useState(null);
   const month = currentMonthKey();
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       const data = await fetchTasks(month);
-      if (data) { if (isAdmin) setByDealer(data.dealers || {}); else setOwn(data); }
+      if (data) {
+        if (isAdmin) {
+          setByDealer(data.dealers || {});
+          setProductEntriesByDealer(data.productEntries || {});
+        } else setOwn(data);
+      }
       setLoading(false);
     })();
   }, [isAdmin]);
@@ -3567,7 +3669,8 @@ function TasksSummaryCard({ isAdmin }) {
 
   if (!isAdmin) {
     const tasks = own?.tasks || [];
-    if (!tasks.some((t) => t.text)) return null;
+    const productEntries = own?.productEntries || [];
+    if (!tasks.some((t) => t.text) && !productEntries.length) return null;
     const doneCount = tasks.filter((t) => t.done).length;
     return (
       <Card style={{ padding: 18 }}>
@@ -3582,7 +3685,11 @@ function TasksSummaryCard({ isAdmin }) {
               <span style={{ textDecoration: t.done ? "line-through" : "none", color: t.done ? INK_SOFT : INK }}>{t.text}</span>
             </label>
           ))}
+          <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 4, paddingTop: 10 }}>
+            <button onClick={() => setSelectedEntries({ title: `Your product closures — ${monthLabel(month)}`, entries: productEntries })} style={{ border: "none", background: EMERALD_SOFT, color: "#047857", borderRadius: 8, padding: "7px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Product closures: {productEntries.length} · View list</button>
+          </div>
         </div>
+        {selectedEntries && <ProductEntriesModal {...selectedEntries} onClose={() => setSelectedEntries(null)} />}
       </Card>
     );
   }
@@ -3593,8 +3700,13 @@ function TasksSummaryCard({ isAdmin }) {
     const tasks = byDealer[d];
     const set = tasks.filter((t) => t.text);
     const done = set.filter((t) => t.done).length;
-    return { dealer: d, total: set.length, done };
+    const productEntries = productEntriesByDealer?.[d] || [];
+    return { dealer: d, total: set.length, done, productEntries };
   });
+  const productTotals = MONTHLY_PRODUCTS.map((definition) => ({
+    ...definition,
+    entries: dealerNames.flatMap((dealer) => productEntriesByDealer?.[dealer] || []).filter((entry) => entry.product === definition.key),
+  }));
 
   return (
     <Card style={{ padding: 18 }}>
@@ -3611,9 +3723,21 @@ function TasksSummaryCard({ isAdmin }) {
                 <span style={{ fontSize: 11.5, color: INK_SOFT, whiteSpace: "nowrap" }}>{r.done}/{r.total}</span>
               </div>
             )}
+            <button onClick={() => setSelectedEntries({ title: `${r.dealer} product closures`, entries: r.productEntries })} style={{ border: "none", background: "none", padding: 0, textAlign: "left", fontSize: 11.5, color: r.productEntries.length ? EMERALD : INK_SOFT, fontWeight: 700, cursor: "pointer" }}>Products closed: {r.productEntries.length} · View list</button>
           </div>
         ))}
       </div>
+      <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 14, paddingTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: INK_SOFT, marginBottom: 8 }}>Closures by product</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {productTotals.map((product) => (
+            <button key={product.key} onClick={() => setSelectedEntries({ title: `${product.label} closures`, entries: product.entries })} style={{ border: "none", padding: "7px 10px", borderRadius: 8, background: product.entries.length ? EMERALD_SOFT : "#F4F5F7", color: product.entries.length ? "#047857" : INK_SOFT, fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
+              {product.label}: {product.entries.length}
+            </button>
+          ))}
+        </div>
+      </div>
+      {selectedEntries && <ProductEntriesModal {...selectedEntries} onClose={() => setSelectedEntries(null)} />}
     </Card>
   );
 }
