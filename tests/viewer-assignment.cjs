@@ -233,6 +233,52 @@ test("product closures save under the assigned dealer, ignore forged ownership, 
   assert.equal(saved.length, 2, "unauthorized requests must not insert rows");
 });
 
+test("product closure edits and deletes enforce ownership and validate changes", async () => {
+  const f = await fixture();
+  const rows = [
+    { id: "own", dealer: "THILEEPAN V", month: "2026-10", product: "demat", notes: "original" },
+    { id: "other", dealer: "RASISH", month: "2026-10", product: "demat", notes: "private" },
+  ];
+  let calls = 0;
+  const mutate = ({ where, data }, deleting) => {
+    calls++;
+    const index = rows.findIndex((row) => row.id === where.id && row.dealer === where.dealer);
+    if (index === -1) throw Object.assign(new Error("Not found"), { code: "P2025" });
+    if (deleting) return rows.splice(index, 1)[0];
+    return Object.assign(rows[index], plain(data));
+  };
+  f.db.dealerProductTask = { update: async (args) => mutate(args, false), delete: async (args) => mutate(args, true) };
+  const schema = await load("lib/productClosure.js", { zod: require("zod") });
+  const route = await load("app/api/tasks/products/[id]/route.js", {
+    ...f.routeMocks("../../../../../lib"), "../../../../../lib/productClosure": schema,
+  });
+  const req = (body) => ({ json: async () => body });
+  const context = (id) => ({ params: { id } });
+  const valid = req({ product: "iepf", notes: " updated ", dealer: "RASISH", month: "2025-01" });
+  assert.equal((await route.PATCH(valid, context("other"))).status, 404);
+  assert.equal((await route.DELETE({}, context("other"))).status, 404);
+  assert.equal((await route.PATCH(req({ product: "bad", notes: "" }), context("own"))).status, 400);
+  assert.equal((await route.PATCH(req({ product: "demat", notes: "x".repeat(1001) }), context("own"))).status, 400);
+  const result = await route.PATCH(valid, context("own"));
+  assert.equal(result.status, 200);
+  assert.deepEqual(await result.json(), { id: "own", dealer: "THILEEPAN V", month: "2026-10", product: "iepf", notes: "updated" });
+  const before = calls;
+  f.accounts[0].viewerName = "RM ONLY";
+  for (const method of ["PATCH", "DELETE"]) assert.equal((await route[method](valid, context("own"))).status, 403);
+  f.setActor("admin");
+  for (const method of ["PATCH", "DELETE"]) assert.equal((await route[method](valid, context("own"))).status, 403);
+  f.setActor(null);
+  for (const method of ["PATCH", "DELETE"]) assert.equal((await route[method](valid, context("own"))).status, 401);
+  assert.equal(calls, before);
+  f.setActor("viewer");
+  f.accounts[0].viewerName = "THILEEPAN V";
+  assert.equal((await route.DELETE({}, context("own"))).status, 200);
+  assert.equal((await route.DELETE({}, context("own"))).status, 404);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].notes, "private");
+  assert.deepEqual(f.audits.map((entry) => entry.action), ["EDIT_PRODUCT_CLOSURE", "DELETE_PRODUCT_CLOSURE"]);
+});
+
 test("MIS selects the assigned person's aggregate instead of the login name", async () => {
   const f = await fixture();
   f.db.targets = { findUnique: async () => ({ dealerSalary: { "THILEEPAN V": 100 }, incentiveMultiplier: 10 }) };
@@ -242,6 +288,7 @@ test("MIS selects the assigned person's aggregate instead of the login name", as
     if (sql.includes("SELECT DISTINCT date")) return [{ date: "2026-10-09" }, { date: "2026-10-08" }];
     if (sql.includes("SELECT person, COUNT")) return [{ person: "THILEEPAN V", cnt: 2 }, { person: "RASISH", cnt: 99 }];
     if (sql.includes("WITH records")) return [{ person: "THILEEPAN V", mtd: 123, yesterday: 12 }, { person: "RASISH", mtd: 999 }];
+    if (sql.includes("WITH latest_records")) return [{ person: "thileepan v", date: "2026-10-09", revenue: 42 }];
     throw new Error("Unexpected MIS query");
   };
   const route = await load("app/api/mis/summary/route.js", f.routeMocks("../../../../lib"));
@@ -249,6 +296,8 @@ test("MIS selects the assigned person's aggregate instead of the login name", as
   assert.equal(data.dealer, "THILEEPAN V");
   assert.equal(data.clientsMapped, 2);
   assert.equal(data.mtdRevenue, 123);
+  assert.equal(data.latestRevenue, 42);
+  assert.equal(data.latestRevenueDate, "2026-10-09");
   assert.equal(data.target, 1000);
 });
 

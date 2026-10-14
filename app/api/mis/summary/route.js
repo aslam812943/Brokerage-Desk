@@ -32,8 +32,9 @@ function caseInsensitiveGet(obj, key) {
 // dailyAvgAchieved/dailyShortfall pair with dailyTarget: how much per trading
 // day has actually landed so far this month, and the gap (if any) between
 // that and the per-day pace needed to hit the full month's target.
-function buildPersonSummary(name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier) {
+function buildPersonSummary(name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier, latestByPerson) {
   const agg = aggByPerson[name.toLowerCase()];
+  const latest = latestByPerson[name.toLowerCase()];
   const clientsMapped = Number(caseInsensitiveGet(mappedByPerson, name)) || 0;
   const mtdRevenue = agg?.mtd || 0;
   const rawSalary = Number(caseInsensitiveGet(dealerSalary, name));
@@ -54,6 +55,8 @@ function buildPersonSummary(name, aggByPerson, mappedByPerson, tradingDays, trad
     dailyAvgAchieved,
     dailyShortfall,
     yesterdayRevenue: agg?.yesterday || 0,
+    latestRevenueDate: latest?.date ?? null,
+    latestRevenue: latest ? Number(latest.revenue) : null,
     clientsMapped,
     tradedClientsCount: agg?.tradedCount || 0,
     tradedClients: agg?.tradedClients || [],
@@ -121,7 +124,7 @@ export async function GET() {
   // correlated subquery against per_client), instead of the previous
   // version's two separate top-level queries that each rebuilt person_rows
   // from scratch over the same month-wide join.
-  const personRows = await prisma.$queryRaw`
+  const personRowsQuery = prisma.$queryRaw`
     WITH records AS (
       -- Scans back to the start of the *previous* month (not just this
       -- month) in one pass, tagged by period — the previous-month side
@@ -197,7 +200,35 @@ export async function GET() {
     FROM person_rows pr
     GROUP BY pr.person
   `;
+  // Search all report history: a person's latest data may predate the MIS
+  // month. Group dates before choosing the latest, keeping genuine zero days.
+  // Use the same Kotak share and dealer/RM split as the monthly calculation.
+  const [personRows, latestPersonRows] = await Promise.all([
+    personRowsQuery,
+    prisma.$queryRaw`
+      WITH latest_records AS (
+        SELECT dr.date, m.dealer, m.rm,
+               dr."netBrok" * CASE WHEN dr.source = 'KOTAK' THEN ${kotakSharePct}::float8 / 100.0 ELSE 1 END AS amount
+        FROM "DailyRecord" dr
+        JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
+        WHERE dr.date <= ${latestDate}
+      ), latest_person_rows AS (
+        SELECT lower(dealer) AS person, date,
+               amount * CASE WHEN rm = '' OR lower(dealer) = lower(rm) THEN 1 ELSE (100 - ${rmSplitPct}::float8) / 100.0 END AS amount
+        FROM latest_records WHERE dealer <> ''
+        UNION ALL
+        SELECT lower(rm) AS person, date,
+               amount * CASE WHEN dealer = '' THEN 1 ELSE ${rmSplitPct}::float8 / 100.0 END AS amount
+        FROM latest_records WHERE rm <> '' AND lower(rm) <> lower(dealer)
+      )
+      SELECT DISTINCT ON (person) person, date, SUM(amount)::float8 AS revenue
+      FROM latest_person_rows
+      GROUP BY person, date
+      ORDER BY person, date DESC
+    `,
+  ]);
   const aggByPerson = Object.fromEntries(personRows.map((r) => [r.person.toLowerCase(), r]));
+  const latestByPerson = Object.fromEntries(latestPersonRows.map((r) => [r.person, r]));
 
   if (!isAdmin) {
     const scope = session.user.viewerScope;
@@ -205,7 +236,7 @@ export async function GET() {
       latestDate,
       prevDate,
       prevMonthStart,
-      ...buildPersonSummary(scope.name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier),
+      ...buildPersonSummary(scope.name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier, latestByPerson),
     });
   }
 
@@ -219,7 +250,7 @@ export async function GET() {
   const dealerNames = dealerNameRows.map((r) => r.name);
 
   const rows = dealerNames
-    .map((name) => buildPersonSummary(name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier))
+    .map((name) => buildPersonSummary(name, aggByPerson, mappedByPerson, tradingDays, tradingDaysSoFar, dealerSalary, incentiveMultiplier, latestByPerson))
     .sort((a, b) => b.mtdRevenue - a.mtdRevenue);
 
   return NextResponse.json({ latestDate, prevDate, prevMonthStart, rows });

@@ -3387,7 +3387,7 @@ async function fetchTasks(month) {
   return res.json();
 }
 
-function ProductEntryList({ entries }) {
+function ProductEntryList({ entries, onEdit, onDelete }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
       {entries.map((entry) => (
@@ -3396,10 +3396,87 @@ function ProductEntryList({ entries }) {
             <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{PRODUCT_LABELS[entry.product] || entry.product}</div>
             <div style={{ fontSize: 11.5, color: entry.notes ? INK_SOFT : "#B7BCC5", marginTop: 3, whiteSpace: "pre-wrap" }}>{entry.notes || "No notes"}</div>
           </div>
-          {entry.createdAt && <span style={{ fontSize: 10.5, color: "#9AA1AC", whiteSpace: "nowrap" }}>{new Date(entry.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</span>}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8, flexShrink: 0 }}>
+            {entry.createdAt && <span style={{ fontSize: 10.5, color: "#9AA1AC", whiteSpace: "nowrap" }}>{new Date(entry.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}</span>}
+            {onEdit && onDelete && <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => onEdit(entry)} aria-label={`Edit ${PRODUCT_LABELS[entry.product]} closure`} style={{ border: `1px solid ${LINE}`, borderRadius: 6, padding: "5px 9px", background: "white", color: BLUE, cursor: "pointer" }}>Edit</button>
+              <button onClick={() => onDelete(entry)} aria-label={`Delete ${PRODUCT_LABELS[entry.product]} closure`} style={{ border: `1px solid ${LINE}`, borderRadius: 6, padding: "5px 9px", background: "white", color: RED, cursor: "pointer" }}>Delete</button>
+            </div>}
+          </div>
         </div>
       ))}
     </div>
+  );
+}
+
+function ProductClosureDialog({ entry, mode, onClose, onSaved }) {
+  const dialogRef = useRef(null);
+  const savingRef = useRef(false);
+  const [product, setProduct] = useState(entry.product);
+  const [notes, setNotes] = useState(entry.notes || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const deleting = mode === "delete";
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    const dialog = dialogRef.current;
+    dialog.showModal();
+    return () => { dialog.close(); previousFocus?.focus(); };
+  }, []);
+  const close = () => { if (!savingRef.current) onClose(); };
+  const submit = async (event) => {
+    event.preventDefault();
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/tasks/products/${encodeURIComponent(entry.id)}`, {
+        method: deleting ? "DELETE" : "PATCH", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        ...(deleting ? {} : { body: JSON.stringify({ product, notes }) }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(result?.error || "Couldn't save your change. Please try again.");
+      onSaved(result, deleting);
+      onClose();
+    } catch (err) {
+      setError(err.message || "Connection failed. Please try again.");
+    } finally {
+      savingRef.current = false;
+      setBusy(false);
+    }
+  };
+  return (
+    <dialog ref={dialogRef} aria-labelledby="closure-dialog-title" aria-describedby="closure-dialog-description"
+      onCancel={(event) => { event.preventDefault(); close(); }}
+      style={{ border: `1px solid ${LINE}`, borderRadius: 16, padding: 24, width: "min(480px, calc(100vw - 32px))", boxSizing: "border-box", maxHeight: "85vh", boxShadow: "0 24px 80px #0004", color: INK }}>
+      <style>{`dialog::backdrop { background: rgba(14,20,32,.48); }`}</style>
+      <form onSubmit={submit}>
+        <h2 id="closure-dialog-title" style={{ margin: "0 0 8px", fontSize: 19 }}>{deleting ? "Delete product closure?" : "Edit product closure"}</h2>
+        <p id="closure-dialog-description" style={{ fontSize: 13, color: INK_SOFT, margin: "0 0 18px" }}>{deleting ? "This entry will be permanently removed from your monthly closures. This cannot be undone." : "Update the product or notes, then confirm your changes."}</p>
+        {deleting ? <div style={{ background: "#FAFBFC", border: `1px solid ${LINE}`, borderRadius: 8, padding: 12, overflowWrap: "anywhere" }}>
+          <strong>{PRODUCT_LABELS[entry.product]}</strong>
+          <div style={{ fontSize: 12, color: INK_SOFT, marginTop: 4 }}>{monthLabel(entry.month)}</div>
+          <div style={{ fontSize: 13, marginTop: 8, whiteSpace: "pre-wrap" }}>{entry.notes || "No notes"}</div>
+        </div> : <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0, display: "grid", gap: 12 }}>
+          <label style={{ fontSize: 13 }}>Product
+            <select value={product} onChange={(event) => setProduct(event.target.value)} style={{ ...inputStyle, width: "100%", marginTop: 6 }}>
+              {MONTHLY_PRODUCTS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+            </select>
+          </label>
+          <label style={{ fontSize: 13 }}>Closure notes
+            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={1000} rows={4} style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical", marginTop: 6 }} />
+          </label>
+          <span style={{ fontSize: 11, color: INK_SOFT }}>{notes.length}/1000 characters</span>
+        </fieldset>}
+        {error && <p role="alert" style={{ color: RED, fontSize: 13 }}>{error}</p>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 22 }}>
+          <button type="button" autoFocus={deleting} disabled={busy} onClick={close} style={{ ...inputStyle, cursor: "pointer" }}>Cancel</button>
+          <button type="submit" disabled={busy} style={{ border: 0, borderRadius: 8, padding: "10px 16px", color: "white", background: deleting ? RED : BLUE, cursor: busy ? "wait" : "pointer" }}>{busy ? (deleting ? "Deleting…" : "Saving…") : (deleting ? "Delete closure" : "Confirm changes")}</button>
+        </div>
+      </form>
+    </dialog>
   );
 }
 
@@ -3430,6 +3507,7 @@ function TasksTab({ isAdmin, showToast }) {
   const [editDrafts, setEditDrafts] = useState({});
   const [productDraft, setProductDraft] = useState({ product: MONTHLY_PRODUCTS[0].key, notes: "" });
   const [addingProduct, setAddingProduct] = useState(false);
+  const [closureAction, setClosureAction] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -3560,9 +3638,13 @@ function TasksTab({ isAdmin, showToast }) {
             <textarea value={productDraft.notes} onChange={(e) => setProductDraft((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Closure notes" maxLength={1000} rows={2} style={{ ...inputStyle, resize: "vertical", minHeight: 58 }} />
             <button disabled={addingProduct} onClick={addProductEntry} style={{ border: "none", background: BLUE, color: "#fff", borderRadius: 8, padding: "10px 14px", cursor: addingProduct ? "wait" : "pointer", fontSize: 12.5, fontWeight: 700 }}>{addingProduct ? "Adding…" : "Add entry"}</button>
           </div>
-          <ProductEntryList entries={productEntries} />
+          <ProductEntryList entries={productEntries} onEdit={(entry) => setClosureAction({ entry, mode: "edit" })} onDelete={(entry) => setClosureAction({ entry, mode: "delete" })} />
           {productEntries.length === 0 && <div style={{ fontSize: 12.5, color: "#B7BCC5" }}>No product closures entered for this month.</div>}
         </Card>
+        {closureAction && <ProductClosureDialog {...closureAction} onClose={() => setClosureAction(null)} onSaved={(result, deleting) => {
+          setOwn((prev) => ({ ...prev, productEntries: deleting ? prev.productEntries.filter((entry) => entry.id !== result.id) : prev.productEntries.map((entry) => entry.id === result.id ? result : entry) }));
+          showToast(deleting ? "Product closure deleted" : "Product closure updated");
+        }} />}
       </div>
     );
   }
@@ -3819,7 +3901,7 @@ function MisSummaryCard({ data }) {
           tone={pctOfTarget === null ? "blue" : pctOfTarget >= 100 ? "emerald" : pctOfTarget >= 60 ? "gold" : "red"}
           icon={TrendingUp}
         />
-        <KPI label="Yesterday's revenue" value={fmtINR(data.yesterdayRevenue)} tone="ink" icon={Calendar} />
+        <KPI label="Latest revenue" value={data.latestRevenueDate ? fmtINR(data.latestRevenue) : "—"} sub={data.latestRevenueDate ? `Report date: ${data.latestRevenueDate}` : "No uploaded records"} tone="ink" icon={Calendar} />
         <KPI label="Total Clients Mapped" value={data.clientsMapped} tone="teal" icon={Users} />
         <KPI
           label="Incentive"
@@ -3936,11 +4018,15 @@ function MisAdminTable({ rows, latestDate, prevMonthStart }) {
         <table>
           <thead>
             <tr>
-              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Daily Avg</th><th>Pace</th><th>Till-date</th><th>Yesterday</th><th>Clients Mapped</th><th>Traded Clients</th><th>Dormant</th><th>Salary</th><th>Multiplier</th><th>Incentive</th>
+              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Daily Avg</th><th>Pace</th><th>Till-date</th><th>Latest revenue</th><th>Clients Mapped</th><th>Traded Clients</th><th>Dormant</th><th>Salary</th><th>Multiplier</th><th>Incentive</th>
             </tr>
           </thead>
           <tbody>
             {rows.flatMap((r) => {
+              const hasOlderReport = Boolean(r.latestRevenueDate && latestDate && r.latestRevenueDate < latestDate);
+              const reportWarning = hasOlderReport
+                ? `Latest available report for ${r.dealer}: ${r.latestRevenueDate}. No records for the newest report date, ${latestDate}.`
+                : !r.latestRevenueDate ? `No uploaded records for ${r.dealer}.` : null;
               const trs = [
                 <tr key={r.dealer} onClick={() => setExpanded(expanded === r.dealer ? null : r.dealer)} style={{ cursor: "pointer" }}>
                   <td><Badge text={r.dealer} color={dealerColor(r.dealer)} /></td>
@@ -3957,7 +4043,16 @@ function MisAdminTable({ rows, latestDate, prevMonthStart }) {
                     )}
                   </td>
                   <td>{fmtINR(r.mtdRevenue)}</td>
-                  <td>{fmtINR(r.yesterdayRevenue)}</td>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      {r.latestRevenueDate ? fmtINR(r.latestRevenue) : "—"}
+                      {reportWarning && <span tabIndex={0} title={reportWarning} aria-label={reportWarning} style={{ display: "inline-flex", alignItems: "center", gap: 4, color: GOLD, background: GOLD_SOFT, borderRadius: 5, padding: "3px 5px", fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" }}>
+                        <AlertTriangle size={14} aria-hidden="true" />
+                        {hasOlderReport ? "Older data" : "No data"}
+                      </span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: INK_SOFT, marginTop: 4, whiteSpace: "nowrap" }}>{r.latestRevenueDate || "No uploaded records"}</div>
+                  </td>
                   <td>{r.clientsMapped}</td>
                   <td style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     {r.tradedClientsCount} {expanded === r.dealer ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
