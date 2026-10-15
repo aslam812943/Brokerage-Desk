@@ -24,18 +24,26 @@ function LoginForm() {
     e.preventDefault();
     setError("");
     setSubmitting(true);
+    try {
     const res = await signIn("credentials", {
       username,
       password,
       redirect: false,
     });
-    setSubmitting(false);
-    if (res?.error) {
-      setError(res.error === "CredentialsSignin" ? "Invalid username or password." : res.error);
+    if (!res || res.error || !res.ok) {
+      const message = res?.error;
+      setError(message === "CredentialsSignin" ? "Invalid username or password."
+        : message === "Too many login attempts. Please wait a few minutes and try again." ? message
+        : "Sign-in is temporarily unavailable. Please try again shortly.");
       return;
     }
     router.push(safeRedirect(params.get("callbackUrl")));
     router.refresh();
+    } catch {
+      setError("Unable to connect. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
