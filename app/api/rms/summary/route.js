@@ -29,6 +29,7 @@ export async function GET(req) {
   const targets = await prisma.targets.findUnique({ where: { id: 1 } });
   const kotakSharePct = targets?.kotakSharePct ?? 85;
   const rmSplitPct = targets?.rmSplitPct ?? 50;
+  const privilegeSharePct = targets?.privilegeSharePct ?? 50;
 
   const scopeSql = allowedCodeNorms?.length ? Prisma.sql`AND dr."codeNorm" IN (${Prisma.join(allowedCodeNorms)})` : Prisma.empty;
 
@@ -64,6 +65,7 @@ export async function GET(req) {
           WHEN lower(m.dealer) = lower(m.rm) THEN 0
           ELSE ${rmSplitPct}::float8
         END) / 100.0
+      * (CASE WHEN m.privilege THEN ${privilegeSharePct}::float8 / 100.0 ELSE 1 END)
     ), 0)::float8 AS value
     FROM "DailyRecord" dr
     JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"

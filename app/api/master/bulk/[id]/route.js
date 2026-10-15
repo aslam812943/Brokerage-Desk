@@ -26,7 +26,7 @@ export async function DELETE(_req, { params }) {
   const liveRestores = restoreByCode.size
     ? await prisma.masterClient.findMany({
         where: { code: { in: [...restoreByCode.keys()] } },
-        select: { code: true, createdAt: true },
+        select: { code: true, createdAt: true, privilege: true },
       })
     : [];
   const reinsert = liveRestores.map((row) => {
@@ -37,6 +37,7 @@ export async function DELETE(_req, { params }) {
       rm: prev.rm ?? "",
       dealer: prev.dealer ?? "",
       branch: prev.branch ?? "",
+      privilege: row.privilege,
       createdAt: row.createdAt,
     };
   });

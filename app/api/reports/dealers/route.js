@@ -42,6 +42,7 @@ export async function GET(req) {
   const targets = await prisma.targets.findUnique({ where: { id: 1 } });
   const kotakSharePct = targets?.kotakSharePct ?? 85;
   const rmSplitPct = targets?.rmSplitPct ?? 50;
+  const privilegeSharePct = targets?.privilegeSharePct ?? 50;
 
   const dateFilter = Prisma.sql`
     ${from ? Prisma.sql`AND dr.date >= ${from}` : Prisma.empty}
@@ -73,19 +74,19 @@ export async function GET(req) {
       -- range with brokerage summing to exactly 0, which shouldn't count
       -- as having traded. totalBrokerage/netBrokerage sums are unchanged.
       WITH per_client AS (
-        SELECT m.dealer AS dealer, dr."codeNorm" AS "codeNorm", m.rm AS rm,
+        SELECT m.dealer AS dealer, dr."codeNorm" AS "codeNorm", m.rm AS rm, m.privilege,
                SUM(CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS client_amt
         FROM "DailyRecord" dr
         JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
         WHERE m.dealer <> '' ${dateFilter}
-        GROUP BY m.dealer, dr."codeNorm", m.rm
+        GROUP BY m.dealer, dr."codeNorm", m.rm, m.privilege
       )
       SELECT
         dealer,
         COUNT(*) FILTER (WHERE client_amt <> 0)::int AS "tradedClients",
         COALESCE(SUM(client_amt), 0)::float8 AS "totalBrokerage",
         COALESCE(SUM(
-          client_amt * (CASE
+          client_amt * (CASE WHEN privilege THEN ${privilegeSharePct}::float8 / 100.0 ELSE 1 END) * (CASE
               WHEN COALESCE(rm, '') = '' THEN 100
               WHEN lower(dealer) = lower(rm) THEN 100
               ELSE 100 - ${rmSplitPct}::float8
@@ -102,7 +103,7 @@ export async function GET(req) {
           -- the RM split. Scans back to prevMonthStart in one pass, tagged
           -- by period, instead of a second full table scan.
           WITH records AS (
-            SELECT dr.date, dr."codeNorm" AS "codeNorm", dr.code, dr.name, m.dealer AS dealer, m.rm AS rm,
+            SELECT dr.date, dr."codeNorm" AS "codeNorm", dr.code, dr.name, m.dealer AS dealer, m.rm AS rm, m.privilege,
                    (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS "netRaw",
                    (CASE WHEN dr.date >= ${from} THEN 'current' ELSE 'previous' END) AS period
             FROM "DailyRecord" dr
@@ -110,16 +111,16 @@ export async function GET(req) {
             WHERE m.dealer <> '' AND dr.date >= ${prevMonthStart} AND dr.date <= ${to}
           ),
           per_client AS (
-            SELECT dealer, period, "codeNorm", MAX(code) AS code, MAX(name) AS name, rm,
+            SELECT dealer, period, "codeNorm", MAX(code) AS code, MAX(name) AS name, rm, privilege,
                    SUM("netRaw") AS client_amt
             FROM records
-            GROUP BY dealer, period, "codeNorm", rm
+            GROUP BY dealer, period, "codeNorm", rm, privilege
           )
           SELECT dealer,
                  (SELECT COUNT(*) FROM per_client pc WHERE pc.dealer = base.dealer AND pc.period = 'previous' AND pc.client_amt <> 0)::int AS "prevTradedClients",
                  (SELECT COALESCE(SUM(pc.client_amt), 0) FROM per_client pc WHERE pc.dealer = base.dealer AND pc.period = 'previous')::float8 AS "prevTotalBrokerage",
                  (
-                   SELECT COALESCE(SUM(pc.client_amt * (CASE WHEN COALESCE(pc.rm, '') = '' THEN 100 WHEN lower(pc.dealer) = lower(pc.rm) THEN 100 ELSE 100 - ${rmSplitPct}::float8 END) / 100.0), 0)
+                   SELECT COALESCE(SUM(pc.client_amt * (CASE WHEN pc.privilege THEN ${privilegeSharePct}::float8 / 100.0 ELSE 1 END) * (CASE WHEN COALESCE(pc.rm, '') = '' THEN 100 WHEN lower(pc.dealer) = lower(pc.rm) THEN 100 ELSE 100 - ${rmSplitPct}::float8 END) / 100.0), 0)
                    FROM per_client pc WHERE pc.dealer = base.dealer AND pc.period = 'previous'
                  )::float8 AS "prevNetBrokerage",
                  (

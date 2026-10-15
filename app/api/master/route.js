@@ -10,6 +10,7 @@ const clientSchema = z.object({
   rm: z.string().trim().max(200).default(""),
   dealer: z.string().trim().max(200).default(""),
   branch: z.string().trim().max(200).default(""),
+  privilege: z.boolean().optional(),
 });
 
 export async function GET() {
@@ -38,7 +39,8 @@ export async function PUT(req) {
   // dealer/RM rename all round-trip the full list). Preserve each surviving
   // client's original `createdAt` so the Clients tab "Added" column isn't
   // reset to now() every time an unrelated row is edited.
-  const existing = await prisma.masterClient.findMany({ select: { code: true, createdAt: true } });
+  const existing = await prisma.masterClient.findMany({ select: { code: true, createdAt: true, privilege: true } });
+  const privilegeByCode = new Map(existing.map((r) => [r.code, r.privilege]));
   const createdAtByCode = new Map(existing.map((r) => [r.code, r.createdAt]));
   await prisma.$transaction([
     prisma.masterClient.deleteMany({}),
@@ -48,6 +50,7 @@ export async function PUT(req) {
             data: records.map((r) => ({
               ...r,
               code: r.code,
+              privilege: r.privilege ?? privilegeByCode.get(r.code) ?? false,
               ...(createdAtByCode.has(r.code) ? { createdAt: createdAtByCode.get(r.code) } : {}),
             })),
           }),

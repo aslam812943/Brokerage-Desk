@@ -111,6 +111,7 @@ export async function GET() {
 
   const kotakSharePct = targetsRow?.kotakSharePct ?? 85;
   const rmSplitPct = targetsRow?.rmSplitPct ?? 50;
+  const privilegeSharePct = targetsRow?.privilegeSharePct ?? 50;
   const dealerSalary = targetsRow?.dealerSalary ?? {};
   const incentiveMultiplier = targetsRow?.incentiveMultiplier ?? 10;
   const mappedByPerson = Object.fromEntries(mappedCounts.map((r) => [r.person, r.cnt]));
@@ -132,7 +133,8 @@ export async function GET() {
       SELECT dr.date, dr."codeNorm" AS "codeNorm", dr.code, dr.name,
              COALESCE(NULLIF(m.dealer, ''), '') AS dealer,
              COALESCE(NULLIF(m.rm, ''), '') AS rm,
-             (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END) AS "netRaw",
+             (CASE WHEN dr.source = 'KOTAK' THEN dr."netBrok" * (${kotakSharePct}::float8 / 100.0) ELSE dr."netBrok" END)
+               * (CASE WHEN m.privilege THEN ${privilegeSharePct}::float8 / 100.0 ELSE 1 END) AS "netRaw",
              (CASE WHEN dr.date >= ${mStart} THEN 'current' ELSE 'previous' END) AS period
       FROM "DailyRecord" dr
       LEFT JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
@@ -208,7 +210,8 @@ export async function GET() {
     prisma.$queryRaw`
       WITH latest_records AS (
         SELECT dr.date, m.dealer, m.rm,
-               dr."netBrok" * CASE WHEN dr.source = 'KOTAK' THEN ${kotakSharePct}::float8 / 100.0 ELSE 1 END AS amount
+               dr."netBrok" * CASE WHEN dr.source = 'KOTAK' THEN ${kotakSharePct}::float8 / 100.0 ELSE 1 END
+                 * (CASE WHEN m.privilege THEN ${privilegeSharePct}::float8 / 100.0 ELSE 1 END) AS amount
         FROM "DailyRecord" dr
         JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
         WHERE dr.date <= ${latestDate}

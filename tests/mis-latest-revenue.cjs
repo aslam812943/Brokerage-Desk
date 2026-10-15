@@ -5,10 +5,10 @@ const vm = require("node:vm");
 const { test } = require("node:test");
 const { transform } = require("next/dist/build/swc");
 
-async function fixture() {
+async function fixture(privilegeSharePct = 50) {
   let latestQuery;
   const prisma = {
-    targets: { findUnique: async () => ({ kotakSharePct: 80, rmSplitPct: 25 }) },
+    targets: { findUnique: async () => ({ kotakSharePct: 80, rmSplitPct: 25, privilegeSharePct }) },
     tradingHoliday: { findMany: async () => [] },
     $queryRaw: async (strings, ...values) => {
       const sql = strings.join("?");
@@ -57,9 +57,11 @@ test("Postgres latest-date SQL handles splits, case, old reports, zero and negat
   try {
     const { latestQuery } = await fixture();
     const query = latestQuery.text.replace('WITH latest_records', `WITH
-      fixture_clients("codeNorm", dealer, rm) AS (VALUES
-        ('A','Alice','Bob'), ('B','ALICE','alice'), ('C','Old',''), ('D','','RM ONLY'), ('E','Zero',''), ('F','Negative','')),
+      fixture_clients("codeNorm", dealer, rm, privilege) AS (VALUES
+        ('A','Alice','Bob',false), ('B','ALICE','alice',false), ('C','Old','',false), ('D','','RM ONLY',false), ('E','Zero','',false), ('F','Negative','',false),
+        ('P','Privilege Dealer','Privilege RM',true)),
       fixture_records(date,"codeNorm","netBrok",source) AS (VALUES
+        ('2026-10-12','P',100::float8,''),
         ('2026-10-09','A',999::float8,''),
         ('2026-10-12','A',100::float8,'KOTAK'),
         ('2026-10-12','A',40::float8,''),
@@ -75,6 +77,8 @@ test("Postgres latest-date SQL handles splits, case, old reports, zero and negat
     const rows = Object.fromEntries(result.rows.map((row) => [row.person, row]));
     assert.equal(rows.alice.revenue, 100); // (100 * 80% + 40) * 75% + 10
     assert.equal(rows.bob.revenue, 30);
+    assert.equal(rows['privilege dealer'].revenue, 37.5);
+    assert.equal(rows['privilege rm'].revenue, 12.5);
     assert.equal(rows.old.date, "2026-08-03");
     assert.equal(rows.old.revenue, 42);
     assert.equal(rows["rm only"].revenue, 16);

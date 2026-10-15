@@ -60,7 +60,7 @@ export async function POST(req) {
   for (const r of parsed.data.records) incoming.set(normCode(r.code), r);
 
   const existing = await prisma.masterClient.findMany({
-    select: { code: true, name: true, rm: true, dealer: true, branch: true, createdAt: true, codeNorm: true },
+    select: { code: true, name: true, rm: true, dealer: true, branch: true, privilege: true, createdAt: true, codeNorm: true },
   });
   const existingByNorm = new Map(existing.map((r) => [r.codeNorm ?? normCode(r.code), r]));
 
@@ -76,7 +76,7 @@ export async function POST(req) {
     const prevRow = existingByNorm.get(norm);
     if (prevRow) {
       replaceCodes.push(prevRow.code);
-      toInsert.push({ code: prevRow.code, name: r.name, rm: r.rm, dealer: r.dealer, branch: r.branch, createdAt: prevRow.createdAt });
+      toInsert.push({ code: prevRow.code, name: r.name, rm: r.rm, dealer: r.dealer, branch: r.branch, privilege: prevRow.privilege, createdAt: prevRow.createdAt });
       changes.push({
         code: prevRow.code,
         existed: true,

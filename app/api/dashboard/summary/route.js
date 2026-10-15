@@ -69,6 +69,7 @@ export async function GET(req) {
   const targets = await prisma.targets.findUnique({ where: { id: 1 } });
   const kotakSharePct = targets?.kotakSharePct ?? 85;
   const rmSplitPct = targets?.rmSplitPct ?? 50;
+  const privilegeSharePct = targets?.privilegeSharePct ?? 50;
 
   // Every query below joins through this same shape: one row per DailyRecord,
   // carrying the Kotak-share-adjusted amount (netRaw) and both the dealer's
@@ -91,13 +92,13 @@ export async function GET(req) {
         WHEN COALESCE(m.rm, '') = '' THEN 100
         WHEN lower(m.dealer) = lower(m.rm) THEN 100
         ELSE 100 - ${rmSplitPct}::float8
-      END) AS "dealerPct",
+      END) * (CASE WHEN m.privilege THEN ${privilegeSharePct}::float8 / 100.0 ELSE 1 END) AS "dealerPct",
       (CASE
         WHEN COALESCE(m.rm, '') = '' THEN 0
         WHEN COALESCE(m.dealer, '') = '' THEN 100
         WHEN lower(m.dealer) = lower(m.rm) THEN 0
         ELSE ${rmSplitPct}::float8
-      END) AS "rmPct"
+      END) * (CASE WHEN m.privilege THEN ${privilegeSharePct}::float8 / 100.0 ELSE 1 END) AS "rmPct"
     FROM "DailyRecord" dr
     LEFT JOIN "MasterClient" m ON m."codeNorm" = dr."codeNorm"
     WHERE ${dateFilterSql} ${scopeSql}

@@ -1,0 +1,1 @@
+ALTER TABLE "MasterClient" ADD COLUMN "privilege" BOOLEAN NOT NULL DEFAULT false;

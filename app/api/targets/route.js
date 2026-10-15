@@ -8,6 +8,7 @@ const targetsSchema = z.object({
   dealerMonthly: z.record(z.string(), z.number().finite()).default({}),
   kotakSharePct: z.number().finite().min(0).max(100).default(85),
   rmSplitPct: z.number().finite().min(0).max(100).default(50),
+  privilegeSharePct: z.number().finite().min(0).max(100).optional(),
   dealerSalary: z.record(z.string(), z.number().finite()).default({}),
   incentiveMultiplier: z.number().finite().min(0).default(10),
 });
@@ -21,6 +22,7 @@ export async function GET() {
   const dealerMonthly = row?.dealerMonthly ?? {};
   const kotakSharePct = row?.kotakSharePct ?? 85;
   const rmSplitPct = row?.rmSplitPct ?? 50;
+  const privilegeSharePct = row?.privilegeSharePct ?? 50;
   const dealerSalary = row?.dealerSalary ?? {};
   const incentiveMultiplier = row?.incentiveMultiplier ?? 10;
 
@@ -33,12 +35,12 @@ export async function GET() {
     );
     const ownSalary = matchKey ? dealerSalary[matchKey] : 0;
     return NextResponse.json({
-      monthly, kotakSharePct, rmSplitPct, incentiveMultiplier,
+      monthly, kotakSharePct, rmSplitPct, privilegeSharePct, incentiveMultiplier,
       dealerSalary: { [matchKey || session.user.viewerName]: ownSalary },
     });
   }
 
-  return NextResponse.json({ monthly, dealerMonthly, kotakSharePct, rmSplitPct, dealerSalary, incentiveMultiplier });
+  return NextResponse.json({ monthly, dealerMonthly, kotakSharePct, rmSplitPct, privilegeSharePct, dealerSalary, incentiveMultiplier });
 }
 
 export async function PUT(req) {

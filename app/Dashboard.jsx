@@ -110,18 +110,19 @@ function canonicalRm(rmNames, raw) {
 
 // Splits a client's brokerage between their Dealer and RM. When both are set
 // and name the same person (case-insensitive — the same dealer often acts as
-// their own RM), there's nothing to split: the dealer takes the full 100%.
+// their own RM), the dealer takes the full eligible amount.
 // Otherwise the RM gets rmSharePct (Targets.rmSplitPct) and the dealer gets
 // the remainder; if only one side is mapped, that side takes the full amount.
-function splitShares(dealer, rm, rmSharePct) {
+function splitShares(dealer, rm, rmSharePct, privilege = false, privilegeSharePct = 50) {
   const d = String(dealer || "").trim();
   const r = String(rm || "").trim();
   const hasDealer = !!d && d !== UNMAPPED;
   const hasRm = !!r;
-  if (hasDealer && hasRm && d.toLowerCase() === r.toLowerCase()) return { dealerPct: 100, rmPct: 0, samePerson: true };
-  if (hasDealer && hasRm) return { dealerPct: 100 - rmSharePct, rmPct: rmSharePct, samePerson: false };
-  if (hasDealer) return { dealerPct: 100, rmPct: 0, samePerson: false };
-  if (hasRm) return { dealerPct: 0, rmPct: 100, samePerson: false };
+  const eligiblePct = privilege ? privilegeSharePct : 100;
+  if (hasDealer && hasRm && d.toLowerCase() === r.toLowerCase()) return { dealerPct: eligiblePct, rmPct: 0, samePerson: true };
+  if (hasDealer && hasRm) return { dealerPct: (100 - rmSharePct) * eligiblePct / 100, rmPct: rmSharePct * eligiblePct / 100, samePerson: false };
+  if (hasDealer) return { dealerPct: eligiblePct, rmPct: 0, samePerson: false };
+  if (hasRm) return { dealerPct: 0, rmPct: eligiblePct, samePerson: false };
   return { dealerPct: 0, rmPct: 0, samePerson: false };
 }
 
@@ -439,6 +440,11 @@ export default function App() {
   const [viewerKind, setViewerKind] = useState("dealer");
   const [viewerScope, setViewerScope] = useState(null);
   const [scopeLoaded, setScopeLoaded] = useState(false);
+  const [coreLoading, setCoreLoading] = useState(true);
+  const [coreError, setCoreError] = useState(false);
+  const [datesLoading, setDatesLoading] = useState(true);
+  const [datesError, setDatesError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   const showToast = (msg, tone = "emerald") => { setToast({ msg, tone }); setTimeout(() => setToast(null), 3200); };
   const isAdmin = role === "admin";
@@ -447,31 +453,38 @@ export default function App() {
   // are bounded by client count, not upload history, so there's no reason to
   // gate the whole app behind them being ready.
   useEffect(() => {
+    let cancelled = false;
+    setCoreLoading(true);
+    setCoreError(false);
+    setDatesLoading(true);
+    setDatesError(false);
     (async () => {
       const scope = await apiGet("/api/viewer-scope").catch(() => null);
+      if (cancelled) return;
       setViewerScope(scope);
       setScopeLoaded(true);
       if (!scope || (!scope.isAdmin && !scope.matched)) return;
       if (!scope.isAdmin) setViewerKind(scope.kind === "rm" ? "rm" : "dealer");
-      // /api/daily/dates and /api/debit/latest are both cheap — bounded by
-      // dates/clients, not by transaction volume — so both load eagerly
-      // instead of waiting on the lazy full-history fetch below.
-      const [m, dr, rr, t, dates, latestDebit] = await Promise.all([
-        storageGet("master-clients"),
-        storageGet("dealers-list"),
-        storageGet("rms-list"),
-        storageGet("targets"),
-        apiGet("/api/daily/dates"),
-        apiGet("/api/debit/latest"),
-      ]);
-      if (m) setMaster(m);
-      if (dr) setDealerRegistry(dr);
-      if (rr) setRmRegistry(rr);
-      if (t) setTargets(t);
-      if (dates) setDailyDates([...dates].sort());
-      if (latestDebit) setLatestDebitByCode(Object.fromEntries(latestDebit.map((r) => [normCode(r.code), r.debit])));
+      // Publish core data independently of potentially slower history reads.
+      Promise.all([apiGet("/api/master"), apiGet("/api/dealers"), apiGet("/api/rms"), apiGet("/api/targets")])
+        .then(([m, dr, rr, t]) => {
+          if (cancelled) return;
+          if (!Array.isArray(m) || !Array.isArray(dr) || !Array.isArray(rr) || !t) throw new Error("Core data unavailable");
+          setMaster(m); setDealerRegistry(dr); setRmRegistry(rr); setTargets(t);
+        })
+        .catch(() => { if (!cancelled) setCoreError(true); })
+        .finally(() => { if (!cancelled) setCoreLoading(false); });
+      apiGet("/api/daily/dates").then((dates) => {
+        if (!Array.isArray(dates)) throw new Error("Dates unavailable");
+        if (!cancelled) setDailyDates([...dates].sort());
+      }).catch(() => { if (!cancelled) setDatesError(true); })
+        .finally(() => { if (!cancelled) setDatesLoading(false); });
+      apiGet("/api/debit/latest").then((latestDebit) => {
+        if (!cancelled && Array.isArray(latestDebit)) setLatestDebitByCode(Object.fromEntries(latestDebit.map((r) => [normCode(r.code), r.debit])));
+      }).catch(() => { if (!cancelled) showToast("Debit balances could not be loaded. Refresh to retry.", "red"); });
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [loadAttempt]);
 
   // Only Upload/Missing Finder need this, for the per-date history list —
   // fetched once, lazily, the first time either tab is opened. dailyData/
@@ -583,13 +596,33 @@ export default function App() {
     showToast(`Removed debit report ${isoD}`, "gold");
     storageDelete(`debit:${isoD}`);
   };
-  const saveMaster = async (records) => { invalidateReadCache(); setMaster(records); storageSet("master-clients", records); };
+  const saveMaster = async (records) => {
+    try {
+      if (!await storageSet("master-clients", records)) throw new Error("Save failed");
+      invalidateReadCache();
+      setMaster(records);
+      return true;
+    } catch {
+      showToast("Could not save clients. Please try again.", "red");
+      return false;
+    }
+  };
   // Re-pull the client list from the server without a write-back — used after
   // a bulk upload / upload rollback, which mutate MasterClient server-side.
   const reloadMaster = async () => { invalidateReadCache(); const m = await storageGet("master-clients"); if (m) setMaster(m); };
   const saveDealerRegistry = async (list) => { setDealerRegistry(list); storageSet("dealers-list", list); };
   const saveRmRegistry = async (list) => { setRmRegistry(list); storageSet("rms-list", list); };
-  const saveTargets = async (t) => { invalidateReadCache(); setTargets(t); storageSet("targets", t); };
+  const saveTargets = async (t) => {
+    try {
+      if (!await storageSet("targets", t)) throw new Error("Save failed");
+      invalidateReadCache();
+      setTargets(t);
+      return true;
+    } catch {
+      showToast("Could not save settings. Please try again.", "red");
+      return false;
+    }
+  };
 
   const renameDealer = async (oldName, newName) => {
     newName = canonicalDealer(dealerNames.filter((d) => d !== oldName), newName);
@@ -789,7 +822,7 @@ export default function App() {
           </div>
           <div>
             <div style={{ fontSize: 18, fontWeight: 800, color: "#fff" }}>Sharewealth Edge</div>
-            <div style={{ fontSize: 12, color: "#A6B0C3" }}>{latestDate ? `Data through ${parseISO(latestDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}` : "No data uploaded yet"}</div>
+            <div style={{ fontSize: 12, color: "#A6B0C3" }}>{latestDate ? `Data through ${parseISO(latestDate).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}` : datesLoading ? "Loading upload dates…" : datesError ? "Upload dates unavailable" : "No data uploaded yet"}</div>
           </div>
         </div>
         <div className="dt-header-right" style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
@@ -809,6 +842,9 @@ export default function App() {
       </div>
 
       <div className="dt-content" style={{ padding: 22 }}>
+        {coreLoading ? <div role="status">Loading clients and settings…</div> : coreError ? (
+          <div role="alert">Could not load client data. <button onClick={() => setLoadAttempt((n) => n + 1)}>Retry</button></div>
+        ) : <>
         {tab === "dashboard" && <Dashboard master={master} targets={targets} isAdmin={isAdmin} />}
         {tab === "mis" && <MisTab isAdmin={isAdmin} showToast={showToast} />}
         {tab === "clients" && (
@@ -847,6 +883,7 @@ export default function App() {
         {tab === "reports" && isAdmin && <ReportsTab targets={targets} showToast={showToast} />}
         {tab === "targets" && isAdmin && <TargetsTab targets={targets} dealerNames={dealerNames} onSave={saveTargets} onWipeUsers={wipeUsers} showToast={showToast} />}
         {tab === "tasks" && !isRmViewer && <TasksTab isAdmin={isAdmin} showToast={showToast} />}
+        </>}
       </div>
 
       <div style={{ textAlign: "center", padding: "6px 0 14px", fontSize: 11, color: "#B7BCC5" }}>
@@ -1258,6 +1295,7 @@ const EXPORT_COLUMNS = [
   { key: "dealer", label: "Dealer" },
   { key: "rm", label: "RM" },
   { key: "branch", label: "Branch" },
+  { key: "privilege", label: "Privilege" },
   { key: "brokerage", label: "Brokerage" },
   { key: "debit", label: "Debit Balance" },
 ];
@@ -1270,7 +1308,9 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   const [editingCode, setEditingCode] = useState(null);
   const [editDraft, setEditDraft] = useState({});
   const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState({ code: "", name: "", dealer: "", rm: "", branch: "" });
+  const [draft, setDraft] = useState({ code: "", name: "", dealer: "", rm: "", branch: "", privilege: false });
+  const [selectedCodes, setSelectedCodes] = useState([]);
+  const [saving, setSaving] = useState(false);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkPending, setBulkPending] = useState(null);
   const [exportOpen, setExportOpen] = useState(false);
@@ -1336,17 +1376,34 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   const { sorted, sortKey, sortDir, toggle } = useSort(filtered, "brokerage", "desc");
 
   const startEdit = (r) => { setEditingCode(r.code); setEditDraft({ ...r }); };
-  const saveEdit = () => {
-    const next = master.map((m) => (m.code === editingCode ? { ...m, name: editDraft.name, dealer: editDraft.dealer, rm: editDraft.rm, branch: editDraft.branch } : m));
-    onSave(next);
-    setEditingCode(null);
+  const saveEdit = async () => {
+    const next = master.map((m) => (m.code === editingCode ? { ...m, name: editDraft.name, dealer: editDraft.dealer, rm: editDraft.rm, branch: editDraft.branch, privilege: !!editDraft.privilege } : m));
+    setSaving(true);
+    try { if (await onSave(next)) setEditingCode(null); }
+    finally { setSaving(false); }
   };
   const removeClient = (code) => onSave(master.filter((m) => m.code !== code));
-  const addClient = () => {
+  const addClient = async () => {
     if (!draft.code) return;
-    onSave(master.filter((m) => m.code !== draft.code).concat([draft]));
-    setDraft({ code: "", name: "", dealer: "", rm: "", branch: "" });
-    setAdding(false);
+    setSaving(true);
+    try {
+      if (!await onSave(master.filter((m) => m.code !== draft.code).concat([draft]))) return;
+      setDraft({ code: "", name: "", dealer: "", rm: "", branch: "", privilege: false });
+      setAdding(false);
+    } finally { setSaving(false); }
+  };
+
+  const visibleCodes = sorted.slice(0, 500).map((r) => r.code);
+  const selected = new Set(selectedCodes.filter((code) => master.some((m) => m.code === code)));
+  const setBulkPrivilege = async (privilege) => {
+    if (!selected.size || saving) return;
+    setSaving(true);
+    try {
+      if (await onSave(master.map((m) => selected.has(m.code) ? { ...m, privilege } : m))) {
+        showToast(`Privilege set to ${privilege ? "Yes" : "No"} for ${selected.size} client(s)`);
+        setSelectedCodes([]);
+      }
+    } finally { setSaving(false); }
   };
 
   const onBulkFile = async (file) => {
@@ -1448,6 +1505,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
       dealer: r.dealer || "",
       rm: r.rm || "",
       branch: r.branch || "",
+      privilege: r.privilege ? "Yes" : "No",
       brokerage: Math.round(r.brokerage * 100) / 100,
       debit: Math.round(r.debit * 100) / 100,
     });
@@ -1541,7 +1599,12 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
               {rmNames.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
             <input placeholder="Branch" value={draft.branch} onChange={(e) => setDraft({ ...draft, branch: e.target.value })} style={inputStyle} />
-            <button onClick={addClient} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Save</button>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>Privilege
+              <select aria-label="New client privilege" value={String(draft.privilege)} onChange={(e) => setDraft({ ...draft, privilege: e.target.value === "true" })} style={inputStyle}>
+                <option value="false">No</option><option value="true">Yes</option>
+              </select>
+            </label>
+            <button disabled={saving} onClick={addClient} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: EMERALD, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{saving ? "Saving..." : "Save"}</button>
           </div>
         </Card>
       )}
@@ -1691,15 +1754,24 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
       )}
 
       <Card style={{ padding: 18 }}>
+        {isAdmin && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12, fontSize: 13 }}>
+          <span>{selected.size} selected</span>
+          <button style={inputStyle} disabled={saving || !selected.size || !!editingCode} onClick={() => setBulkPrivilege(true)}>Set privilege: Yes</button>
+          <button style={inputStyle} disabled={saving || !selected.size || !!editingCode} onClick={() => setBulkPrivilege(false)}>Set privilege: No</button>
+          <button style={inputStyle} disabled={saving || !selected.size} onClick={() => setSelectedCodes([])}>Clear selection</button>
+          <span style={{ color: INK_SOFT }}>Select clients below (selection is kept when searching).</span>
+        </div>}
         <div style={{ overflowX: "auto", maxHeight: 520, overflowY: "auto" }}>
           <table>
             <thead>
               <tr>
+                {isAdmin && <th><input type="checkbox" aria-label="Select all visible clients" disabled={saving || !visibleCodes.length} checked={visibleCodes.length > 0 && visibleCodes.every((code) => selected.has(code))} ref={(el) => { if (el) el.indeterminate = visibleCodes.some((code) => selected.has(code)) && !visibleCodes.every((code) => selected.has(code)); }} onChange={(e) => setSelectedCodes(e.target.checked ? [...new Set([...selectedCodes, ...visibleCodes])] : selectedCodes.filter((code) => !visibleCodes.includes(code)))} /></th>}
                 <SortHeader label="Code" active={sortKey === "code"} dir={sortDir} onClick={() => toggle("code")} />
                 <SortHeader label="Name" active={sortKey === "name"} dir={sortDir} onClick={() => toggle("name")} />
                 <SortHeader label="Dealer" active={sortKey === "dealer"} dir={sortDir} onClick={() => toggle("dealer")} />
                 <SortHeader label="RM" active={sortKey === "rm"} dir={sortDir} onClick={() => toggle("rm")} />
                 <SortHeader label="Branch" active={sortKey === "branch"} dir={sortDir} onClick={() => toggle("branch")} />
+                <SortHeader label="Privilege" active={sortKey === "privilege"} dir={sortDir} onClick={() => toggle("privilege")} />
                 <SortHeader label="Added" active={sortKey === "createdAt"} dir={sortDir} onClick={() => toggle("createdAt")} />
                 <SortHeader label="Brokerage" active={sortKey === "brokerage"} dir={sortDir} onClick={() => toggle("brokerage")} />
                 <SortHeader label="Debit" active={sortKey === "debit"} dir={sortDir} onClick={() => toggle("debit")} />
@@ -1711,6 +1783,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
                 const editing = editingCode === r.code;
                 return (
                   <tr key={r.code}>
+                    {isAdmin && <td><input type="checkbox" aria-label={`Select client ${r.code}`} disabled={saving} checked={selected.has(r.code)} onChange={(e) => setSelectedCodes(e.target.checked ? [...selectedCodes, r.code] : selectedCodes.filter((code) => code !== r.code))} /></td>}
                     <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.code}</td>
                     <td>
                       {editing ? (
@@ -1738,6 +1811,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
                       ) : <span style={{ color: INK_SOFT }}>{r.rm}</span>}
                     </td>
                     <td>{editing ? <input value={editDraft.branch} onChange={(e) => setEditDraft({ ...editDraft, branch: e.target.value })} style={{ ...inputStyle, width: 110 }} /> : <span style={{ color: INK_SOFT }}>{r.branch}</span>}</td>
+                    <td>{editing ? <select aria-label={`Privilege for ${r.code}`} value={String(!!editDraft.privilege)} onChange={(e) => setEditDraft({ ...editDraft, privilege: e.target.value === "true" })} style={inputStyle}><option value="false">No</option><option value="true">Yes</option></select> : <span style={{ color: r.privilege ? TEAL : INK_SOFT, fontWeight: r.privilege ? 700 : 400 }}>{r.privilege ? "Yes" : "No"}</span>}</td>
                     <td style={{ color: INK_SOFT, whiteSpace: "nowrap" }} title={fmtDateTime(r.createdAt)}>{fmtDateShort(r.createdAt)}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.brokerage)}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", color: r.debit > 0 ? RED : INK_SOFT }}>{r.debit ? fmtFull(r.debit) : "—"}</td>
@@ -1745,13 +1819,13 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
                       <td>
                         {editing ? (
                           <div style={{ display: "flex", gap: 6 }}>
-                            <button onClick={saveEdit} style={{ border: "none", background: "none", cursor: "pointer", color: EMERALD }}><Check size={15} /></button>
+                            <button disabled={saving} aria-label={`Save client ${r.code}`} onClick={saveEdit} style={{ border: "none", background: "none", cursor: "pointer", color: EMERALD }}><Check size={15} /></button>
                             <button onClick={() => setEditingCode(null)} style={{ border: "none", background: "none", cursor: "pointer", color: INK_SOFT }}><X size={15} /></button>
                           </div>
                         ) : (
                           <div style={{ display: "flex", gap: 8 }}>
-                            <button onClick={() => startEdit(r)} style={{ border: "none", background: "none", cursor: "pointer", color: BLUE }}><Pencil size={14} /></button>
-                            <button onClick={() => removeClient(r.code)} style={{ border: "none", background: "none", cursor: "pointer", color: RED }}><Trash2 size={14} /></button>
+                            <button disabled={saving} aria-label={`Edit client ${r.code}`} onClick={() => startEdit(r)} style={{ border: "none", background: "none", cursor: "pointer", color: BLUE }}><Pencil size={14} /></button>
+                            <button disabled={saving} onClick={() => removeClient(r.code)} style={{ border: "none", background: "none", cursor: "pointer", color: RED }}><Trash2 size={14} /></button>
                           </div>
                         )}
                       </td>
@@ -1843,6 +1917,7 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
   };
 
   const rmSplitPct = targets.rmSplitPct ?? 50;
+  const privilegeSharePct = targets.privilegeSharePct ?? 50;
   // Total = undivided brokerage attributed to the dealer. Net = the dealer's
   // own share after subtracting whatever the mapped RM takes per splitShares()
   // — the same split used in the RM/Dealer split table below, and what drives
@@ -1864,11 +1939,11 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
     master.forEach((mm) => {
       if (!mm.dealer) return;
       const brokerage = brokerageByClient[normCode(mm.code)] || 0;
-      const { dealerPct } = splitShares(mm.dealer, mm.rm, rmSplitPct);
+      const { dealerPct } = splitShares(mm.dealer, mm.rm, rmSplitPct, mm.privilege, privilegeSharePct);
       map[mm.dealer] = (map[mm.dealer] || 0) + (brokerage * dealerPct) / 100;
     });
     return map;
-  }, [master, brokerageByClient, rmSplitPct]);
+  }, [master, brokerageByClient, rmSplitPct, privilegeSharePct]);
 
   const clientCount = useMemo(() => {
     const c = {};
@@ -1894,7 +1969,7 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
       .filter((mm) => mm.dealer === dealerName)
       .map((mm) => {
         const brokerage = brokerageByClient[normCode(mm.code)] || 0;
-        const { dealerPct, rmPct } = splitShares(mm.dealer, mm.rm, rmSplitPct);
+        const { dealerPct, rmPct } = splitShares(mm.dealer, mm.rm, rmSplitPct, mm.privilege, privilegeSharePct);
         return {
           "Client Code": mm.code,
           "Client Name": mm.name,
@@ -1902,6 +1977,8 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
           "Branch": mm.branch || "",
           "Debit Balance": latestDebitByCode?.[normCode(mm.code)] || 0,
           "Total Brokerage": Math.round(brokerage * 100) / 100,
+          "Privilege": mm.privilege ? "Yes" : "No",
+          "Eligible Brokerage": Math.round(brokerage * (mm.privilege ? privilegeSharePct : 100)) / 100,
           "Dealer Share": Math.round(((brokerage * dealerPct) / 100) * 100) / 100,
           "RM Share": Math.round(((brokerage * rmPct) / 100) * 100) / 100,
         };
@@ -1923,11 +2000,12 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
       .filter((mm) => mm.dealer || mm.rm)
       .map((mm) => {
         const brokerage = brokerageByClient[normCode(mm.code)] || 0;
-        const { dealerPct, rmPct, samePerson } = splitShares(mm.dealer, mm.rm, rmSplitPct);
+        const { dealerPct, rmPct, samePerson } = splitShares(mm.dealer, mm.rm, rmSplitPct, mm.privilege, privilegeSharePct);
         return {
           code: mm.code, name: mm.name, dealer: mm.dealer || UNMAPPED, rm: mm.rm || "",
           brokerage, dealerShare: (brokerage * dealerPct) / 100, rmShare: (brokerage * rmPct) / 100,
-          dealerPct, rmPct, samePerson,
+          dealerPct, rmPct, samePerson, privilege: !!mm.privilege,
+          eligibleBrokerage: brokerage * (mm.privilege ? privilegeSharePct : 100) / 100,
         };
       })
       .filter((r) => {
@@ -1936,7 +2014,7 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
         return r.code.toLowerCase().includes(s) || r.name.toLowerCase().includes(s) || r.dealer.toLowerCase().includes(s) || r.rm.toLowerCase().includes(s);
       })
       .sort((a, b) => b.brokerage - a.brokerage);
-  }, [master, brokerageByClient, rmSplitPct, splitSearch]);
+  }, [master, brokerageByClient, rmSplitPct, privilegeSharePct, splitSearch]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -2056,11 +2134,11 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
           </div>
         </div>
         <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
-          Clients mapped to both a dealer and an RM split {100 - rmSplitPct}/{rmSplitPct} (dealer/RM). If the RM and dealer are the same person, the dealer keeps 100%. Adjust the split in the Targets tab.
+          Privilege clients allocate {privilegeSharePct}% of brokerage; other clients allocate 100%. The eligible amount splits {100 - rmSplitPct}/{rmSplitPct} (dealer/RM). If both are the same person, the dealer receives the full eligible amount. Adjust these percentages in Targets.
         </div>
         <div style={{ overflowX: "auto", maxHeight: 520, overflowY: "auto" }}>
           <table>
-            <thead><tr><th>Client</th><th>Dealer</th><th>RM</th><th>Net Brokerage</th><th>Split</th><th>Dealer Share</th><th>RM Share</th></tr></thead>
+            <thead><tr><th>Client</th><th>Dealer</th><th>RM</th><th>Total Brokerage</th><th>Privilege</th><th>Eligible Brokerage</th><th>Share of Total (Dealer / RM)</th><th>Dealer Share</th><th>RM Share</th></tr></thead>
             <tbody>
               {splitRows.slice(0, 500).map((r) => (
                 <tr key={r.code}>
@@ -2073,14 +2151,16 @@ function DealersTab({ master, dealerNames, targets, latestDebitByCode, isAdmin, 
                   <td>{r.dealer && r.dealer !== UNMAPPED ? <Badge text={r.dealer} color={dealerColor(r.dealer)} /> : <Badge text={UNMAPPED} color="#9AA1AC" />}</td>
                   <td style={{ color: INK_SOFT }}>{r.rm || "—"}</td>
                   <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.brokerage)}</td>
+                  <td>{r.privilege ? "Yes" : "No"}</td>
+                  <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.eligibleBrokerage)}</td>
                   <td style={{ fontSize: 12, color: INK_SOFT }}>
-                    {r.samePerson ? "100% (same person)" : `${r.dealerPct}% / ${r.rmPct}%`}
+                    {r.samePerson ? `${r.dealerPct}% (same person)` : `${r.dealerPct}% / ${r.rmPct}%`}
                   </td>
                   <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.dealerShare)}</td>
                   <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.rmShare)}</td>
                 </tr>
               ))}
-              {splitRows.length === 0 && <tr><td colSpan={7} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No clients mapped to a dealer or RM yet.</td></tr>}
+              {splitRows.length === 0 && <tr><td colSpan={9} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No clients mapped to a dealer or RM yet.</td></tr>}
             </tbody>
           </table>
           {splitRows.length > 500 && <div style={{ fontSize: 12, color: INK_SOFT, padding: 8 }}>Showing first 500 of {splitRows.length} — refine your search.</div>}
@@ -3227,19 +3307,29 @@ function TargetsTab({ targets, dealerNames, onSave, onWipeUsers, showToast }) {
   const [monthly, setMonthly] = useState(targets.monthly || 0);
   const [kotakSharePct, setKotakSharePct] = useState(targets.kotakSharePct ?? 85);
   const [rmSplitPct, setRmSplitPct] = useState(targets.rmSplitPct ?? 50);
+  const [privilegeSharePct, setPrivilegeSharePct] = useState(targets.privilegeSharePct ?? 50);
+  const [saving, setSaving] = useState(false);
   const [incentiveMultiplier, setIncentiveMultiplier] = useState(targets.incentiveMultiplier ?? 10);
   const [salaryDrafts, setSalaryDrafts] = useState({});
-  const save = () => {
+  const save = async () => {
     const pct = Number(kotakSharePct);
     const rmPct = Number(rmSplitPct);
     const mult = Number(incentiveMultiplier);
-    onSave({
+    const privilegePct = Number(privilegeSharePct);
+    if (privilegeSharePct === "" || !Number.isFinite(privilegePct) || privilegePct < 0 || privilegePct > 100) {
+      showToast("Enter a privilege percentage between 0 and 100.", "red");
+      return;
+    }
+    setSaving(true);
+    try { if (await onSave({
       ...targets,
       monthly: Number(monthly) || 0,
       kotakSharePct: isNaN(pct) ? 85 : Math.min(100, Math.max(0, pct)),
       rmSplitPct: isNaN(rmPct) ? 50 : Math.min(100, Math.max(0, rmPct)),
+      privilegeSharePct: privilegePct,
       incentiveMultiplier: isNaN(mult) ? 10 : Math.max(0, mult),
-    });
+    })) showToast("Settings saved"); }
+    finally { setSaving(false); }
   };
   const saveSalary = (dealer) => {
     const v = Number(salaryDrafts[dealer]);
@@ -3286,9 +3376,24 @@ function TargetsTab({ targets, dealerNames, onSave, onWipeUsers, showToast }) {
       </Card>
 
       <Card style={{ padding: 20 }}>
+        <SectionTitle>Privilege brokerage share</SectionTitle>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
+          For clients marked Privilege, only this percentage is available to the dealer and RM. The remaining brokerage is excluded from their earnings. Kotak share is applied first. Saving recalculates historical earnings using the current client status and percentages.
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button type="button" onClick={() => setPrivilegeSharePct(50)} style={{ ...inputStyle, color: TEAL }}>50%</button>
+          <input aria-label="Privilege brokerage share percentage" type="number" min="0" max="100" step="any" value={privilegeSharePct} onChange={(e) => setPrivilegeSharePct(e.target.value)} style={{ ...inputStyle, width: 90, fontSize: 15, fontWeight: 700 }} />
+          <span style={{ fontSize: 14, color: INK_SOFT }}>% available to split</span>
+        </div>
+        <div style={{ fontSize: 12.5, color: INK_SOFT, marginTop: 12 }}>
+          Example for ₹100 after any Kotak adjustment: ₹{(Number(privilegeSharePct) || 0).toFixed(2)} eligible → dealer ₹{((Number(privilegeSharePct) || 0) * (100 - Number(rmSplitPct)) / 100).toFixed(2)} + RM ₹{((Number(privilegeSharePct) || 0) * Number(rmSplitPct) / 100).toFixed(2)} (different dealer and RM).
+        </div>
+      </Card>
+
+      <Card style={{ padding: 20 }}>
         <SectionTitle>RM / Dealer brokerage split</SectionTitle>
         <div style={{ fontSize: 12.5, color: INK_SOFT, marginBottom: 12 }}>
-          For a client mapped to both an RM and a dealer, this percentage is the RM's share — the dealer keeps the rest. If the RM and dealer are the same person (case-insensitive), there's no split: the dealer gets 100%. See the split breakdown table in the Dealers tab.
+          For a client mapped to both an RM and a dealer, this percentage is the RM's share of eligible brokerage; the dealer keeps the rest. If both are the same person, the dealer receives the full eligible amount. Privilege clients use the reduced amount configured above. See the split breakdown in Dealers.
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <button
@@ -3325,7 +3430,7 @@ function TargetsTab({ targets, dealerNames, onSave, onWipeUsers, showToast }) {
         </div>
       </Card>
 
-      <button onClick={save} style={{ alignSelf: "flex-start", padding: "10px 22px", borderRadius: 9, border: "none", background: ROSE, color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>Save settings</button>
+      <button disabled={saving} onClick={save} style={{ alignSelf: "flex-start", padding: "10px 22px", borderRadius: 9, border: "none", background: ROSE, color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: "pointer" }}>{saving ? "Saving..." : "Save settings"}</button>
 
       <Card style={{ padding: 20 }}>
         <SectionTitle>Dealer monthly salary</SectionTitle>
