@@ -4123,7 +4123,7 @@ function MisAdminTable({ rows, latestDate, prevMonthStart }) {
         <table>
           <thead>
             <tr>
-              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Daily Avg</th><th>Pace</th><th>Till-date</th><th>Latest revenue</th><th>Clients Mapped</th><th>Traded Clients</th><th>Dormant</th><th>Salary</th><th>Multiplier</th><th>Incentive</th>
+              <th>Dealer</th><th>Target</th><th>Daily Target</th><th>Daily Avg</th><th>Pace</th><th>Till-date</th><th>Latest revenue</th><th>Clients Mapped</th><th>Traded Clients</th><th>Dormant</th><th>Multiplier</th><th>Incentive</th>
             </tr>
           </thead>
           <tbody>
@@ -4163,7 +4163,6 @@ function MisAdminTable({ rows, latestDate, prevMonthStart }) {
                     {r.tradedClientsCount} {expanded === r.dealer ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                   </td>
                   <td>{r.dormantClientsCount > 0 ? <Badge text={r.dormantClientsCount} color={RED} /> : <span style={{ color: INK_SOFT }}>0</span>}</td>
-                  <td>{r.salary != null ? fmtFull(r.salary) : "—"}</td>
                   <td>{r.multiplier != null ? `${r.multiplier.toFixed(2)}x` : "—"}</td>
                   <td>{r.salary == null ? <span style={{ color: INK_SOFT }}>—</span> : <Badge text={r.incentiveEligible ? "Eligible" : "Not eligible"} color={r.incentiveEligible ? EMERALD : "#9AA1AC"} />}</td>
                 </tr>,
@@ -4171,7 +4170,7 @@ function MisAdminTable({ rows, latestDate, prevMonthStart }) {
               if (expanded === r.dealer) {
                 trs.push(
                   <tr key={`${r.dealer}-detail`}>
-                    <td colSpan={13} style={{ background: "#FAFBFC" }}>
+                    <td colSpan={12} style={{ background: "#FAFBFC" }}>
                       <div style={{ fontSize: 12, fontWeight: 700, color: INK_SOFT, margin: "4px 2px" }}>Traded in {monthLabel}</div>
                       <TradedClientsList clients={r.tradedClients} />
                       <div style={{ fontSize: 12, fontWeight: 700, color: INK_SOFT, margin: "12px 2px 4px" }}>Traded in {prevMonthLabel}, not yet in {monthLabel} — follow up</div>
