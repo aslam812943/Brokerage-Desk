@@ -11,6 +11,7 @@ const clientSchema = z.object({
   dealer: z.string().trim().max(200).default(""),
   branch: z.string().trim().max(200).default(""),
   privilege: z.boolean().optional(),
+  createdAt: z.string().datetime({ offset: true }).optional(),
 });
 
 export async function GET() {
@@ -35,10 +36,17 @@ export async function PUT(req) {
   }
 
   const records = parsed.data;
+  const codes = new Set();
+  for (const record of records) {
+    const code = record.code.toUpperCase().replace(/\s+/g, "");
+    if (codes.has(code)) {
+      return NextResponse.json({ error: "Client codes must be unique" }, { status: 400 });
+    }
+    codes.add(code);
+  }
   // This endpoint rewrites the whole table (inline edits, add, delete,
-  // dealer/RM rename all round-trip the full list). Preserve each surviving
-  // client's original `createdAt` so the Clients tab "Added" column isn't
-  // reset to now() every time an unrelated row is edited.
+  // dealer/RM rename all round-trip the full list). Accept an admin's added
+  // date edit, otherwise preserve the original date when it is omitted.
   const existing = await prisma.masterClient.findMany({ select: { code: true, createdAt: true, privilege: true } });
   const privilegeByCode = new Map(existing.map((r) => [r.code, r.privilege]));
   const createdAtByCode = new Map(existing.map((r) => [r.code, r.createdAt]));
@@ -51,7 +59,7 @@ export async function PUT(req) {
               ...r,
               code: r.code,
               privilege: r.privilege ?? privilegeByCode.get(r.code) ?? false,
-              ...(createdAtByCode.has(r.code) ? { createdAt: createdAtByCode.get(r.code) } : {}),
+              ...(r.createdAt ? { createdAt: new Date(r.createdAt) } : createdAtByCode.has(r.code) ? { createdAt: createdAtByCode.get(r.code) } : {}),
             })),
           }),
         ]

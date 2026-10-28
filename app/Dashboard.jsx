@@ -1375,11 +1375,32 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
 
   const { sorted, sortKey, sortDir, toggle } = useSort(filtered, "brokerage", "desc");
 
-  const startEdit = (r) => { setEditingCode(r.code); setEditDraft({ ...r }); };
+  const startEdit = (r) => { setEditingCode(r.code); setEditDraft({ ...r, addedDate: r.createdAt ? isoDate(new Date(r.createdAt)) : "" }); };
   const saveEdit = async () => {
-    const next = master.map((m) => (m.code === editingCode ? { ...m, name: editDraft.name, dealer: editDraft.dealer, rm: editDraft.rm, branch: editDraft.branch, privilege: !!editDraft.privilege } : m));
+    if (!isAdmin || saving) return;
+    const code = (editDraft.code || "").trim();
+    if (!code || code.length > 64) { showToast("Enter a client code (up to 64 characters).", "red"); return; }
+    if (master.some((m) => m.code !== editingCode && normCode(m.code) === normCode(code))) {
+      showToast("That client code already exists.", "red"); return;
+    }
+    let createdAt = editDraft.createdAt;
+    const dateChanged = editDraft.addedDate !== (createdAt ? isoDate(new Date(createdAt)) : "");
+    if (dateChanged) {
+      const date = new Date(`${editDraft.addedDate}T00:00:00`);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(editDraft.addedDate) || Number.isNaN(date.getTime()) || isoDate(date) !== editDraft.addedDate) {
+        showToast("Enter a valid added date.", "red"); return;
+      }
+      createdAt = date.toISOString();
+    }
+    const next = master.map((m) => (m.code === editingCode ? { ...m, code, createdAt, name: editDraft.name, dealer: editDraft.dealer, rm: editDraft.rm, branch: editDraft.branch, privilege: !!editDraft.privilege } : m));
     setSaving(true);
-    try { if (await onSave(next)) setEditingCode(null); }
+    try {
+      if (await onSave(next)) {
+        setSelectedCodes((codes) => codes.map((c) => c === editingCode ? code : c));
+        setEditingCode(null);
+        if (dateChanged) await refreshUploads().catch(() => {});
+      }
+    }
     finally { setSaving(false); }
   };
   const removeClient = (code) => onSave(master.filter((m) => m.code !== code));
@@ -1784,7 +1805,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
                 return (
                   <tr key={r.code}>
                     {isAdmin && <td><input type="checkbox" aria-label={`Select client ${r.code}`} disabled={saving} checked={selected.has(r.code)} onChange={(e) => setSelectedCodes(e.target.checked ? [...selectedCodes, r.code] : selectedCodes.filter((code) => code !== r.code))} /></td>}
-                    <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.code}</td>
+                    <td style={{ fontVariantNumeric: "tabular-nums" }}>{editing ? <input aria-label={`Client code for ${r.code}`} value={editDraft.code} maxLength={64} disabled={saving} onChange={(e) => setEditDraft({ ...editDraft, code: e.target.value })} style={{ ...inputStyle, width: 110 }} /> : r.code}</td>
                     <td>
                       {editing ? (
                         <input value={editDraft.name} onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })} style={{ ...inputStyle, width: 140 }} />
@@ -1812,7 +1833,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
                     </td>
                     <td>{editing ? <input value={editDraft.branch} onChange={(e) => setEditDraft({ ...editDraft, branch: e.target.value })} style={{ ...inputStyle, width: 110 }} /> : <span style={{ color: INK_SOFT }}>{r.branch}</span>}</td>
                     <td>{editing ? <select aria-label={`Privilege for ${r.code}`} value={String(!!editDraft.privilege)} onChange={(e) => setEditDraft({ ...editDraft, privilege: e.target.value === "true" })} style={inputStyle}><option value="false">No</option><option value="true">Yes</option></select> : <span style={{ color: r.privilege ? TEAL : INK_SOFT, fontWeight: r.privilege ? 700 : 400 }}>{r.privilege ? "Yes" : "No"}</span>}</td>
-                    <td style={{ color: INK_SOFT, whiteSpace: "nowrap" }} title={fmtDateTime(r.createdAt)}>{fmtDateShort(r.createdAt)}</td>
+                    <td style={{ color: INK_SOFT, whiteSpace: "nowrap" }} title={fmtDateTime(r.createdAt)}>{editing ? <input type="date" aria-label={`Added date for ${r.code}`} value={editDraft.addedDate} disabled={saving} onChange={(e) => setEditDraft({ ...editDraft, addedDate: e.target.value })} style={{ ...inputStyle, width: 140 }} /> : fmtDateShort(r.createdAt)}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.brokerage)}</td>
                     <td style={{ fontVariantNumeric: "tabular-nums", color: r.debit > 0 ? RED : INK_SOFT }}>{r.debit ? fmtFull(r.debit) : "—"}</td>
                     {isAdmin && (
