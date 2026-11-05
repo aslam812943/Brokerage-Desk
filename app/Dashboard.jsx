@@ -3110,9 +3110,10 @@ function ReportsTab({ targets, showToast }) {
   const totals = (rows || []).reduce((acc, r) => ({
     clientsMapped: acc.clientsMapped + r.clientsMapped,
     tradedClients: acc.tradedClients + r.tradedClients,
+    otherProductsSold: acc.otherProductsSold + (r.otherProductsSold || 0),
     totalBrokerage: acc.totalBrokerage + r.totalBrokerage,
     netBrokerage: acc.netBrokerage + r.netBrokerage,
-  }), { clientsMapped: 0, tradedClients: 0, totalBrokerage: 0, netBrokerage: 0 });
+  }), { clientsMapped: 0, tradedClients: 0, otherProductsSold: 0, totalBrokerage: 0, netBrokerage: 0 });
 
   // salary/multiplier/eligible for one dealer's row — null salary means "not
   // set", kept separate from a genuine 0 so it renders as "—" not "0x".
@@ -3136,6 +3137,7 @@ function ReportsTab({ targets, showToast }) {
         "Dealer": r.dealer,
         "Clients Mapped": r.clientsMapped,
         "Traded Clients": r.tradedClients,
+        "Other Products Sold": r.otherProductsSold || 0,
         "Total Brokerage": Math.round(r.totalBrokerage * 100) / 100,
         "Net Brokerage": Math.round(r.netBrokerage * 100) / 100,
       };
@@ -3143,7 +3145,7 @@ function ReportsTab({ targets, showToast }) {
       const { salary, multiplier, eligible } = incentiveFor(r);
       return { ...base, "Multiplier": multiplier != null ? `${multiplier.toFixed(2)}x` : "", "Incentive Eligible": salary == null ? "" : (eligible ? "Yes" : "No") };
     });
-    data.push({ "Dealer": "TOTAL", "Clients Mapped": totals.clientsMapped, "Traded Clients": totals.tradedClients, "Total Brokerage": Math.round(totals.totalBrokerage * 100) / 100, "Net Brokerage": Math.round(totals.netBrokerage * 100) / 100 });
+    data.push({ "Dealer": "TOTAL", "Clients Mapped": totals.clientsMapped, "Traded Clients": totals.tradedClients, "Other Products Sold": totals.otherProductsSold, "Total Brokerage": Math.round(totals.totalBrokerage * 100) / 100, "Net Brokerage": Math.round(totals.netBrokerage * 100) / 100 });
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Dealer Report");
@@ -3217,7 +3219,7 @@ function ReportsTab({ targets, showToast }) {
               <table>
                 <thead>
                   <tr>
-                    <th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th>Total Brokerage</th><th>Net Brokerage</th>
+                    <th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th title="Product closures recorded in the selected date range (India time)">Other Products Sold</th><th>Total Brokerage</th><th>Net Brokerage</th>
                     {isMonthlyView && <><th>Multiplier</th><th>Incentive</th></>}
                     {monthComparison && <th>vs Last Month</th>}
                   </tr>
@@ -3240,6 +3242,7 @@ function ReportsTab({ targets, showToast }) {
                         </td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.clientsMapped}</td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.tradedClients}</td>
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.otherProductsSold || 0}</td>
                         <td style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmtFull(r.totalBrokerage)}</td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(r.netBrokerage)}</td>
                         {isMonthlyView && (
@@ -3265,7 +3268,7 @@ function ReportsTab({ targets, showToast }) {
                       const { salary: expSalary, multiplier: expMultiplier, eligible: expEligible } = incentiveFor(r);
                       out.push(
                         <tr key={`${r.dealer}-detail`}>
-                          <td colSpan={6 + (isMonthlyView ? 2 : 0)} style={{ background: "#FAFBFC" }}>
+                          <td colSpan={7 + (isMonthlyView ? 2 : 0)} style={{ background: "#FAFBFC" }}>
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, padding: "10px 4px" }}>
                               <KPI label="Prev Month Brokerage" value={fmtINR(r.prevNetBrokerage)} tone="ink" icon={Calendar} />
                               <KPI label="Prev Month Traded Clients" value={r.prevTradedClients} tone="violet" icon={Users} />
@@ -3299,7 +3302,7 @@ function ReportsTab({ targets, showToast }) {
                     return out;
                   })}
                   {(!rows || rows.length === 0) && (
-                    <tr><td colSpan={5 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
+                    <tr><td colSpan={6 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
                   )}
                 </tbody>
                 {rows && rows.length > 0 && (
@@ -3308,6 +3311,7 @@ function ReportsTab({ targets, showToast }) {
                       <td>Total</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.clientsMapped}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.tradedClients}</td>
+                      <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.otherProductsSold}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.totalBrokerage)}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{fmtFull(totals.netBrokerage)}</td>
                       {isMonthlyView && <><td></td><td></td></>}

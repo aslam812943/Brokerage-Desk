@@ -61,6 +61,7 @@ test('Postgres dashboard, MIS, RM and report earnings agree for privilege client
     dailyRecord: { findFirst: async () => ({ date: '2026-10-12' }), findMany: async () => [{ date: '2026-10-12' }] },
     masterClient: { groupBy: async () => [], findMany: async () => [{ codeNorm: 'P' }] },
     dealer: { findMany: async () => [] }, tradingHoliday: { findMany: async () => [] },
+    dealerProductTask: { groupBy: async () => [] },
     async $queryRaw(strings, ...values) {
       const query = Array.isArray(strings) ? Prisma.sql(strings, ...values) : strings;
       let text = query.text.replaceAll('"MasterClient"', 'fixture_clients').replaceAll('"DailyRecord"', 'fixture_records').replaceAll('"Dealer"', 'fixture_dealers').replaceAll('"Rm"', 'fixture_rms');

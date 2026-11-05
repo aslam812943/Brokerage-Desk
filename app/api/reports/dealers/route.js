@@ -64,7 +64,13 @@ export async function GET(req) {
     prevMonthStart = isoDate(prevY, prevM0, 1);
   }
 
-  const [registryDealers, mappedCounts, tradedRows, comparisonRows] = await Promise.all([
+  // Closures have a creation timestamp, not a separate sale date. Use the
+  // recorded date in India, including the entire final day of the range.
+  const productCreatedAt = {
+    ...(from ? { gte: new Date(`${from}T00:00:00+05:30`) } : {}),
+    ...(to ? { lt: new Date(new Date(`${to}T00:00:00+05:30`).getTime() + 86400000) } : {}),
+  };
+  const [registryDealers, mappedCounts, tradedRows, comparisonRows, productCounts] = await Promise.all([
     prisma.dealer.findMany({ select: { name: true } }),
     prisma.masterClient.groupBy({ by: ["dealer"], where: { dealer: { not: "" } }, _count: { _all: true } }),
     prisma.$queryRaw`
@@ -145,16 +151,23 @@ export async function GET(req) {
           FROM (SELECT DISTINCT dealer FROM per_client) base
         `
       : Promise.resolve([]),
+    prisma.dealerProductTask.groupBy({
+      by: ["dealer"],
+      where: { ...(from || to ? { createdAt: productCreatedAt } : {}) },
+      _count: { _all: true },
+    }),
   ]);
 
   const mappedByDealer = Object.fromEntries(mappedCounts.map((r) => [r.dealer, r._count._all]));
   const tradedByDealer = Object.fromEntries(tradedRows.map((r) => [r.dealer, r]));
   const comparisonByDealer = Object.fromEntries(comparisonRows.map((r) => [r.dealer, r]));
+  const productsByDealer = Object.fromEntries(productCounts.map((r) => [r.dealer, r._count._all]));
 
   const dealerNames = new Set([
     ...registryDealers.map((d) => d.name),
     ...Object.keys(mappedByDealer),
     ...Object.keys(tradedByDealer),
+    ...Object.keys(productsByDealer),
   ]);
 
   const rows = Array.from(dealerNames).map((dealer) => {
@@ -163,6 +176,7 @@ export async function GET(req) {
       dealer,
       clientsMapped: mappedByDealer[dealer] || 0,
       tradedClients: tradedByDealer[dealer]?.tradedClients || 0,
+      otherProductsSold: productsByDealer[dealer] || 0,
       totalBrokerage: tradedByDealer[dealer]?.totalBrokerage || 0,
       netBrokerage: tradedByDealer[dealer]?.netBrokerage || 0,
       ...(showMonthComparison ? {
