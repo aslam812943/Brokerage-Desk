@@ -152,7 +152,7 @@ export async function GET(req) {
         `
       : Promise.resolve([]),
     prisma.dealerProductTask.groupBy({
-      by: ["dealer"],
+      by: ["dealer", "product"],
       where: { ...(from || to ? { createdAt: productCreatedAt } : {}) },
       _count: { _all: true },
     }),
@@ -161,7 +161,13 @@ export async function GET(req) {
   const mappedByDealer = Object.fromEntries(mappedCounts.map((r) => [r.dealer, r._count._all]));
   const tradedByDealer = Object.fromEntries(tradedRows.map((r) => [r.dealer, r]));
   const comparisonByDealer = Object.fromEntries(comparisonRows.map((r) => [r.dealer, r]));
-  const productsByDealer = Object.fromEntries(productCounts.map((r) => [r.dealer, r._count._all]));
+  const productsByDealer = Object.create(null);
+  const productBreakdownByDealer = Object.create(null);
+  for (const row of productCounts) {
+    productsByDealer[row.dealer] = (productsByDealer[row.dealer] || 0) + row._count._all;
+    productBreakdownByDealer[row.dealer] ??= Object.create(null);
+    productBreakdownByDealer[row.dealer][row.product] = row._count._all;
+  }
 
   const dealerNames = new Set([
     ...registryDealers.map((d) => d.name),
@@ -177,6 +183,7 @@ export async function GET(req) {
       clientsMapped: mappedByDealer[dealer] || 0,
       tradedClients: tradedByDealer[dealer]?.tradedClients || 0,
       otherProductsSold: productsByDealer[dealer] || 0,
+      productSalesCounts: productBreakdownByDealer[dealer] || {},
       totalBrokerage: tradedByDealer[dealer]?.totalBrokerage || 0,
       netBrokerage: tradedByDealer[dealer]?.netBrokerage || 0,
       ...(showMonthComparison ? {

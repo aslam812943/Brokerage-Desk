@@ -317,12 +317,12 @@ function KPI({ label, value, sub, tone = "ink", icon: Icon }) {
   return (
     <Card style={{ padding: "18px 20px", position: "relative", overflow: "hidden" }}>
       <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: c }} />
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+      <div className="dt-kpi-heading" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
         <span style={{ fontSize: 12.5, fontWeight: 600, color: INK_SOFT, letterSpacing: 0.3, textTransform: "uppercase" }}>{label}</span>
         {Icon && <div style={{ width: 30, height: 30, borderRadius: 9, background: bg, display: "flex", alignItems: "center", justifyContent: "center" }}><Icon size={15} color={c} /></div>}
       </div>
-      <div style={{ fontSize: 26, fontWeight: 700, color: INK, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      {sub && <div style={{ fontSize: 12.5, color: INK_SOFT, marginTop: 6 }}>{sub}</div>}
+      <div className="dt-kpi-value" style={{ fontSize: 26, fontWeight: 700, color: INK, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+      {sub && <div className="dt-kpi-sub" style={{ fontSize: 12.5, color: INK_SOFT, marginTop: 6 }}>{sub}</div>}
     </Card>
   );
 }
@@ -3053,6 +3053,13 @@ function MissingFinderTab({ master, dailyDates, onSaveDaily, onSaveMaster, showT
 // server-side (/api/reports/dealers) since it joins every DailyRecord in
 // the range against MasterClient, not something to reduce client-side.
 function ReportsTab({ targets, showToast }) {
+  const printOptionsRef = useRef(null);
+  const printableRef = useRef(null);
+  const printReport = (includeSummary) => {
+    printableRef.current.dataset.printSummary = includeSummary ? "yes" : "no";
+    printOptionsRef.current.close();
+    window.print();
+  };
   const [period, setPeriod] = useState("month");
   const [useCustom, setUseCustom] = useState(false);
   const [customFrom, setCustomFrom] = useState("");
@@ -3132,8 +3139,9 @@ function ReportsTab({ targets, showToast }) {
 
   const exportExcel = () => {
     if (!rows || !rows.length) { showToast("Nothing to export", "gold"); return; }
-    const data = rows.map((r) => {
+    const data = rows.map((r, index) => {
       const base = {
+        "Sl. No.": index + 1,
         "Dealer": r.dealer,
         "Clients Mapped": r.clientsMapped,
         "Traded Clients": r.tradedClients,
@@ -3159,10 +3167,29 @@ function ReportsTab({ targets, showToast }) {
           browser print dialog, so "Export PDF" needs no extra dependency:
           the user picks "Save as PDF" as the destination. */}
       <style>{`
+        .dt-report-detail-collapsed { display: none; }
         @media print {
+          @page { size: landscape; margin: 10mm; }
           body * { visibility: hidden; }
           .dt-report-printable, .dt-report-printable * { visibility: visible; }
           .dt-report-printable { position: absolute; left: 0; top: 0; width: 100%; }
+          .dt-report-printable .dt-report-detail-collapsed { display: table-row; }
+          .dt-report-printable div { overflow: visible !important; max-height: none !important; }
+          .dt-report-printable table { width: 100%; font-size: 10px; }
+          .dt-report-printable th, .dt-report-printable td { white-space: normal !important; padding: 6px !important; }
+          .dt-report-printable thead { display: table-header-group; }
+          .dt-report-printable tfoot { display: table-row-group; }
+          .dt-report-printable button { display: none !important; }
+          .dt-report-printable .dt-report-client-followup { display: none !important; }
+          .dt-report-printable .dt-report-summary { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; gap: 4px !important; padding: 2px 0 !important; }
+          .dt-report-printable[data-print-summary="no"] .dt-report-summary { display: none !important; }
+          .dt-report-summary > div { padding: 4px 6px !important; border-radius: 4px !important; box-shadow: none !important; min-width: 0; break-inside: avoid; }
+          .dt-report-summary .dt-kpi-heading { margin-bottom: 2px !important; }
+          .dt-report-summary .dt-kpi-heading > span { font-size: 8px !important; letter-spacing: 0 !important; line-height: 1.15; }
+          .dt-report-summary .dt-kpi-heading > div { display: none !important; }
+          .dt-report-summary .dt-kpi-value { font-size: 13px !important; line-height: 1.15; }
+          .dt-report-summary .dt-kpi-sub { font-size: 8px !important; line-height: 1.15; margin-top: 2px !important; }
+          .dt-product-count { break-inside: avoid; }
         }
       `}</style>
 
@@ -3172,7 +3199,7 @@ function ReportsTab({ targets, showToast }) {
           <button onClick={exportExcel} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
             <FileSpreadsheet size={14} /> Export Excel
           </button>
-          <button onClick={() => window.print()} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+          <button onClick={() => printOptionsRef.current.showModal()} disabled={loading} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
             <Printer size={14} /> Export PDF
           </button>
         </div>
@@ -3206,7 +3233,17 @@ function ReportsTab({ targets, showToast }) {
         </div>
       </Card>
 
-      <div className="dt-report-printable">
+      <dialog ref={printOptionsRef} aria-labelledby="report-print-title" aria-describedby="report-print-description" style={{ border: `1px solid ${LINE}`, borderRadius: 12, padding: 24, maxWidth: 420, width: "calc(100% - 40px)", color: INK }}>
+        <h3 id="report-print-title" style={{ margin: "0 0 10px", fontSize: 17 }}>Include summary boxes?</h3>
+        <p id="report-print-description" style={{ fontSize: 13, lineHeight: 1.5, color: INK_SOFT }}>Include the brokerage, traded clients, change, dormant-client count and incentive boxes in the print/PDF? Dealer rows and product counts are included either way.</p>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+          <button autoFocus onClick={() => printOptionsRef.current.close()} style={{ padding: "8px 14px", border: `1px solid ${LINE}`, borderRadius: 6, background: "#fff", cursor: "pointer" }}>Cancel</button>
+          <button onClick={() => printReport(false)} style={{ padding: "8px 14px", border: `1px solid ${LINE}`, borderRadius: 6, background: "#fff", cursor: "pointer" }}>No</button>
+          <button onClick={() => printReport(true)} style={{ padding: "8px 14px", border: "none", borderRadius: 6, background: BLUE, color: "#fff", cursor: "pointer" }}>Yes</button>
+        </div>
+      </dialog>
+
+      <div ref={printableRef} className="dt-report-printable">
         <Card style={{ padding: 18 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <FileBarChart2 size={15} color={INK_SOFT} />
@@ -3219,13 +3256,13 @@ function ReportsTab({ targets, showToast }) {
               <table>
                 <thead>
                   <tr>
-                    <th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th title="Product closures recorded in the selected date range (India time)">Other Products Sold</th><th>Total Brokerage</th><th>Net Brokerage</th>
+                    <th>Sl. No.</th><th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th title="Product closures recorded in the selected date range (India time)">Other Products Sold</th><th>Total Brokerage</th><th>Net Brokerage</th>
                     {isMonthlyView && <><th>Multiplier</th><th>Incentive</th></>}
                     {monthComparison && <th>vs Last Month</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {(rows || []).flatMap((r) => {
+                  {(rows || []).flatMap((r, index) => {
                     const { salary, multiplier, eligible } = isMonthlyView ? incentiveFor(r) : {};
                     const pctChange = monthComparison && r.prevNetBrokerage ? ((r.netBrokerage - r.prevNetBrokerage) / r.prevNetBrokerage) * 100 : null;
                     const isNew = monthComparison && !r.prevNetBrokerage && r.netBrokerage > 0;
@@ -3233,12 +3270,15 @@ function ReportsTab({ targets, showToast }) {
                     const out = [
                       <tr
                         key={r.dealer}
-                        onClick={monthComparison ? () => setExpandedDealer(isExpanded ? null : r.dealer) : undefined}
-                        style={monthComparison ? { cursor: "pointer" } : undefined}
+                        onClick={() => setExpandedDealer(isExpanded ? null : r.dealer)}
+                        style={{ cursor: "pointer" }}
                       >
+                        <td style={{ fontVariantNumeric: "tabular-nums" }}>{index + 1}</td>
                         <td style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
                           {r.dealer}
-                          {monthComparison && (isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />)}
+                          <button type="button" aria-label={`${isExpanded ? "Hide" : "Show"} ${r.dealer} details`} aria-expanded={isExpanded} onClick={(event) => { event.stopPropagation(); setExpandedDealer(isExpanded ? null : r.dealer); }} style={{ border: "none", background: "none", padding: 2, display: "inline-flex", color: "inherit", cursor: "pointer" }}>
+                            {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                          </button>
                         </td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.clientsMapped}</td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{r.tradedClients}</td>
@@ -3264,12 +3304,12 @@ function ReportsTab({ targets, showToast }) {
                         )}
                       </tr>,
                     ];
-                    if (isExpanded && monthComparison) {
+                    {
                       const { salary: expSalary, multiplier: expMultiplier, eligible: expEligible } = incentiveFor(r);
                       out.push(
-                        <tr key={`${r.dealer}-detail`}>
-                          <td colSpan={7 + (isMonthlyView ? 2 : 0)} style={{ background: "#FAFBFC" }}>
-                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, padding: "10px 4px" }}>
+                        <tr key={`${r.dealer}-detail`} className={isExpanded ? undefined : "dt-report-detail-collapsed"}>
+                          <td colSpan={7 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ background: "#FAFBFC" }}>
+                            {monthComparison && <div className="dt-report-summary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, padding: "10px 4px" }}>
                               <KPI label="Prev Month Brokerage" value={fmtINR(r.prevNetBrokerage)} tone="ink" icon={Calendar} />
                               <KPI label="Prev Month Traded Clients" value={r.prevTradedClients} tone="violet" icon={Users} />
                               <KPI label="This Month Traded Clients" value={r.tradedClients} tone="teal" icon={Users} />
@@ -3288,9 +3328,20 @@ function ReportsTab({ targets, showToast }) {
                                 tone={expSalary == null ? "violet" : expEligible ? "emerald" : "red"}
                                 icon={ShieldCheck}
                               />
+                            </div>}
+                            <div style={{ padding: "10px 4px" }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: INK_SOFT, marginBottom: 10 }}>Products sold by type · Selected date range</div>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                {MONTHLY_PRODUCTS.map((product) => (
+                                  <div key={product.key} className="dt-product-count" style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "6px 10px", border: `1px solid ${LINE}`, borderRadius: 6, background: "#fff", fontSize: 12 }}>
+                                    <span style={{ color: INK_SOFT }}>{product.label}</span>
+                                    <strong style={{ color: INK, fontVariantNumeric: "tabular-nums" }}>{r.productSalesCounts?.[product.key] || 0}</strong>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                            {r.dormantClientsCount > 0 && (
-                              <div style={{ marginTop: 4 }}>
+                            {monthComparison && r.dormantClientsCount > 0 && (
+                              <div className="dt-report-client-followup" style={{ marginTop: 4 }}>
                                 <div style={{ fontSize: 12, fontWeight: 700, color: INK_SOFT, margin: "4px 2px" }}>Follow-up: traded last month, not yet this month</div>
                                 <DormantClientsList clients={r.dormantClients} />
                               </div>
@@ -3302,12 +3353,13 @@ function ReportsTab({ targets, showToast }) {
                     return out;
                   })}
                   {(!rows || rows.length === 0) && (
-                    <tr><td colSpan={6 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
+                    <tr><td colSpan={7 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
                   )}
                 </tbody>
                 {rows && rows.length > 0 && (
                   <tfoot>
                     <tr style={{ fontWeight: 700, borderTop: `2px solid ${LINE}` }}>
+                      <td></td>
                       <td>Total</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.clientsMapped}</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.tradedClients}</td>

@@ -7,11 +7,11 @@ const { Prisma } = require('@prisma/client');
 
 test('report counts recorded closures within inclusive India dates, including product-only dealers', async () => {
   const entries = [
-    ['A', '2026-10-04T18:29:59Z'],
-    ['A', '2026-10-04T18:30:00Z'],
-    ['A', '2026-10-11T18:29:59Z'],
-    ['A', '2026-10-11T18:30:00Z'],
-    ['Product only', '2026-10-06T00:00:00Z'],
+    ['A', '2026-10-04T18:29:59Z', 'demat'],
+    ['A', '2026-10-04T18:30:00Z', 'demat'],
+    ['A', '2026-10-11T18:29:59Z', 'mutual_fund_sip'],
+    ['A', '2026-10-11T18:30:00Z', 'mutual_fund_lumpsum'],
+    ['Product only', '2026-10-06T00:00:00Z', 'demat'],
   ];
   const db = {
     targets: { findUnique: async () => null },
@@ -19,14 +19,19 @@ test('report counts recorded closures within inclusive India dates, including pr
     masterClient: { groupBy: async () => [] },
     dailyRecord: { findFirst: async () => ({ date: '2026-10-11' }) },
     $queryRaw: async () => [],
-    dealerProductTask: { groupBy: async ({ where }) => {
+    dealerProductTask: { groupBy: async ({ where, by }) => {
+      assert.deepEqual(Array.from(by), ['dealer', 'product']);
       const counts = {};
-      for (const [dealer, timestamp] of entries) {
+      for (const [dealer, timestamp, product] of entries) {
         const date = new Date(timestamp), filter = where.createdAt;
         if (filter?.gte && date < filter.gte || filter?.lt && date >= filter.lt) continue;
-        counts[dealer] = (counts[dealer] || 0) + 1;
+        const key = JSON.stringify([dealer, product]);
+        counts[key] = (counts[key] || 0) + 1;
       }
-      return Object.entries(counts).map(([dealer, count]) => ({ dealer, _count: { _all: count } }));
+      return Object.entries(counts).map(([key, count]) => {
+        const [dealer, product] = JSON.parse(key);
+        return { dealer, product, _count: { _all: count } };
+      });
     } },
   };
   const file = 'app/api/reports/dealers/route.js';
@@ -43,8 +48,13 @@ test('report counts recorded closures within inclusive India dates, including pr
   assert.equal(report.rows.find(r => r.dealer === 'Zero').otherProductsSold, 0);
   assert.equal(report.rows.find(r => r.dealer === 'Product only').otherProductsSold, 1);
   assert.equal(report.rows.find(r => r.dealer === 'A').netBrokerage, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(report.rows.find(r => r.dealer === 'A').productSalesCounts)), { demat: 1, mutual_fund_sip: 1 });
+  assert.equal(Object.keys(report.rows.find(r => r.dealer === 'Zero').productSalesCounts).length, 0);
+  assert.equal(report.rows.find(r => r.dealer === 'Product only').productSalesCounts.demat, 1);
   const all = await exports.GET({ url: 'http://localhost/api' });
   assert.equal(all.rows.find(r => r.dealer === 'A').otherProductsSold, 4);
+  assert.equal(all.rows.find(r => r.dealer === 'A').productSalesCounts.demat, 2);
+  for (const row of all.rows) assert.equal(Object.values(row.productSalesCounts).reduce((sum, count) => sum + count, 0), row.otherProductsSold);
   const month = await exports.GET({ url: 'http://localhost/api?period=month' });
   assert.equal(month.rows.find(r => r.dealer === 'A').otherProductsSold, 3);
 });
