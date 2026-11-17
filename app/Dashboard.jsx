@@ -3069,6 +3069,7 @@ function ReportsTab({ targets, showToast }) {
   const [monthComparison, setMonthComparison] = useState(false);
   const [expandedDealer, setExpandedDealer] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [selectedDealers, setSelectedDealers] = useState(null);
   const incentiveMultiplier = targets.incentiveMultiplier ?? 10;
 
   // Salary vs. incentive-eligibility only makes sense against a complete
@@ -3114,7 +3115,21 @@ function ReportsTab({ targets, showToast }) {
 
   const rangeLabel = range.from || range.to ? `${range.from || "start"} → ${range.to || "today"}` : "All time";
 
-  const totals = (rows || []).reduce((acc, r) => ({
+  const dealerNames = (rows || []).map((r) => r.dealer);
+  const reportRows = selectedDealers == null
+    ? (rows || [])
+    : (rows || []).filter((r) => selectedDealers.includes(r.dealer));
+  const allDealersSelected = selectedDealers == null || (dealerNames.length > 0 && dealerNames.every((name) => selectedDealers.includes(name)));
+  const toggleDealer = (dealer) => {
+    setSelectedDealers((currentSelection) => {
+      const nextSelection = new Set(currentSelection == null ? dealerNames : currentSelection);
+      if (nextSelection.has(dealer)) nextSelection.delete(dealer);
+      else nextSelection.add(dealer);
+      return nextSelection.size === dealerNames.length ? null : [...nextSelection];
+    });
+  };
+
+  const totals = reportRows.reduce((acc, r) => ({
     clientsMapped: acc.clientsMapped + r.clientsMapped,
     tradedClients: acc.tradedClients + r.tradedClients,
     otherProductsSold: acc.otherProductsSold + (r.otherProductsSold || 0),
@@ -3138,8 +3153,8 @@ function ReportsTab({ targets, showToast }) {
   };
 
   const exportExcel = () => {
-    if (!rows || !rows.length) { showToast("Nothing to export", "gold"); return; }
-    const data = rows.map((r, index) => {
+    if (!reportRows.length) { showToast("Select at least one dealer", "gold"); return; }
+    const data = reportRows.map((r, index) => {
       const base = {
         "Sl. No.": index + 1,
         "Dealer": r.dealer,
@@ -3158,7 +3173,7 @@ function ReportsTab({ targets, showToast }) {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Dealer Report");
     XLSX.writeFile(wb, `dealer_report_${range.from || "all"}_to_${range.to || "now"}.xlsx`);
-    showToast(`Exported ${rows.length} dealer(s)`);
+    showToast(`Exported ${reportRows.length} dealer(s)`);
   };
 
   return (
@@ -3180,6 +3195,8 @@ function ReportsTab({ targets, showToast }) {
           .dt-report-printable thead { display: table-header-group; }
           .dt-report-printable tfoot { display: table-row-group; }
           .dt-report-printable button { display: none !important; }
+          .dt-report-printable .dt-report-select-column { display: none !important; }
+          .dt-report-printable .dt-report-dealer-unselected { display: none !important; }
           .dt-report-printable .dt-report-client-followup { display: none !important; }
           .dt-report-printable .dt-report-summary { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; gap: 4px !important; padding: 2px 0 !important; }
           .dt-report-printable[data-print-summary="no"] .dt-report-summary { display: none !important; }
@@ -3199,7 +3216,7 @@ function ReportsTab({ targets, showToast }) {
           <button onClick={exportExcel} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
             <FileSpreadsheet size={14} /> Export Excel
           </button>
-          <button onClick={() => printOptionsRef.current.showModal()} disabled={loading} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
+          <button onClick={() => reportRows.length ? printOptionsRef.current.showModal() : showToast("Select at least one dealer", "gold")} disabled={loading} style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>
             <Printer size={14} /> Export PDF
           </button>
         </div>
@@ -3256,6 +3273,9 @@ function ReportsTab({ targets, showToast }) {
               <table>
                 <thead>
                   <tr>
+                    <th className="dt-report-select-column" style={{ width: 36 }}>
+                      <input type="checkbox" aria-label="Select all dealers for the report" checked={allDealersSelected} onChange={() => setSelectedDealers(allDealersSelected ? [] : null)} />
+                    </th>
                     <th>Sl. No.</th><th>Dealer</th><th>Clients Mapped</th><th>Traded Clients</th><th title="Product closures recorded in the selected date range (India time)">Other Products Sold</th><th>Total Brokerage</th><th>Net Brokerage</th>
                     {isMonthlyView && <><th>Multiplier</th><th>Incentive</th></>}
                     {monthComparison && <th>vs Last Month</th>}
@@ -3267,12 +3287,17 @@ function ReportsTab({ targets, showToast }) {
                     const pctChange = monthComparison && r.prevNetBrokerage ? ((r.netBrokerage - r.prevNetBrokerage) / r.prevNetBrokerage) * 100 : null;
                     const isNew = monthComparison && !r.prevNetBrokerage && r.netBrokerage > 0;
                     const isExpanded = expandedDealer === r.dealer;
+                    const isDealerSelected = selectedDealers == null || selectedDealers.includes(r.dealer);
                     const out = [
                       <tr
                         key={r.dealer}
+                        className={isDealerSelected ? undefined : "dt-report-dealer-unselected"}
                         onClick={() => setExpandedDealer(isExpanded ? null : r.dealer)}
                         style={{ cursor: "pointer" }}
                       >
+                        <td className="dt-report-select-column">
+                          <input type="checkbox" aria-label={`Include ${r.dealer} in the report`} checked={isDealerSelected} onClick={(event) => event.stopPropagation()} onChange={() => toggleDealer(r.dealer)} />
+                        </td>
                         <td style={{ fontVariantNumeric: "tabular-nums" }}>{index + 1}</td>
                         <td style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
                           {r.dealer}
@@ -3307,8 +3332,8 @@ function ReportsTab({ targets, showToast }) {
                     {
                       const { salary: expSalary, multiplier: expMultiplier, eligible: expEligible } = incentiveFor(r);
                       out.push(
-                        <tr key={`${r.dealer}-detail`} className={isExpanded ? undefined : "dt-report-detail-collapsed"}>
-                          <td colSpan={7 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ background: "#FAFBFC" }}>
+                        <tr key={`${r.dealer}-detail`} className={`${isExpanded ? "" : "dt-report-detail-collapsed"}${isDealerSelected ? "" : " dt-report-dealer-unselected"}`.trim() || undefined}>
+                          <td colSpan={8 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ background: "#FAFBFC" }}>
                             {monthComparison && <div className="dt-report-summary" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, padding: "10px 4px" }}>
                               <KPI label="Prev Month Brokerage" value={fmtINR(r.prevNetBrokerage)} tone="ink" icon={Calendar} />
                               <KPI label="Prev Month Traded Clients" value={r.prevTradedClients} tone="violet" icon={Users} />
@@ -3353,12 +3378,13 @@ function ReportsTab({ targets, showToast }) {
                     return out;
                   })}
                   {(!rows || rows.length === 0) && (
-                    <tr><td colSpan={7 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
+                    <tr><td colSpan={8 + (isMonthlyView ? 2 : 0) + (monthComparison ? 1 : 0)} style={{ color: INK_SOFT, textAlign: "center", padding: 20 }}>No dealer activity in this range.</td></tr>
                   )}
                 </tbody>
-                {rows && rows.length > 0 && (
+                {reportRows.length > 0 && (
                   <tfoot>
                     <tr style={{ fontWeight: 700, borderTop: `2px solid ${LINE}` }}>
+                      <td className="dt-report-select-column"></td>
                       <td></td>
                       <td>Total</td>
                       <td style={{ fontVariantNumeric: "tabular-nums" }}>{totals.clientsMapped}</td>
