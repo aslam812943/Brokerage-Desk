@@ -886,7 +886,7 @@ export default function App() {
         </>}
       </div>
 
-      <div style={{ textAlign: "center", padding: "6px 0 14px", fontSize: 11, color: "#B7BCC5" }}>
+      <div title={`Build ${process.env.NEXT_PUBLIC_BUILD_VERSION || "dev"}`} style={{ textAlign: "center", padding: "6px 0 14px", fontSize: 11, color: "#B7BCC5" }}>
         v{process.env.NEXT_PUBLIC_APP_VERSION || "dev"}
       </div>
 
@@ -1018,17 +1018,30 @@ function Dashboard({ master, targets, isAdmin }) {
   const [period, setPeriod] = useState("month");
   const [todaySearch, setTodaySearch] = useState("");
   const [summary, setSummary] = useState(null);
+  const [summaryError, setSummaryError] = useState(false);
+  const [summaryAttempt, setSummaryAttempt] = useState(0);
   const [todayRows, setTodayRows] = useState(null);
   const [todayRowsDate, setTodayRowsDate] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
+    setSummary(null);
+    setSummaryError(false);
     (async () => {
-      const s = await apiGetCached(`/api/dashboard/summary?period=${period}`);
-      if (!cancelled) setSummary(s);
+      let s = await apiGetCached(`/api/dashboard/summary?period=${period}`);
+      // A transient exhausted connection pool used to leave this component
+      // on "Loading dashboard" forever. Retry once; if it still fails, show
+      // an explicit Retry action instead of an endless loading state.
+      if (!s && !cancelled) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        if (!cancelled) s = await apiGetCached(`/api/dashboard/summary?period=${period}`);
+      }
+      if (cancelled) return;
+      if (s) setSummary(s);
+      else setSummaryError(true);
     })();
     return () => { cancelled = true; };
-  }, [period]);
+  }, [period, summaryAttempt]);
 
   const masterByCode = useMemo(() => { const map = {}; master.forEach((mm) => (map[normCode(mm.code)] = mm)); return map; }, [master]);
   const kotakShare = (targets.kotakSharePct ?? 85) / 100;
@@ -1061,6 +1074,16 @@ function Dashboard({ master, targets, isAdmin }) {
   const { sorted: todaySorted, sortKey: todaySortKey, sortDir: todaySortDir, toggle: todayToggle } = useSort(todayFiltered, "netBrok", "desc");
   const todayGrandTotal = todayRecs.reduce((s, r) => s + r.netBrok, 0);
 
+  if (summaryError) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+        <Card style={{ padding: 50, textAlign: "center", color: INK_SOFT, fontSize: 13.5 }}>
+          <div style={{ marginBottom: 12 }}>Dashboard data could not be loaded.</div>
+          <button onClick={() => setSummaryAttempt((n) => n + 1)} style={{ ...inputStyle, cursor: "pointer", background: "#fff", color: BLUE, fontWeight: 700 }}>Retry</button>
+        </Card>
+      </div>
+    );
+  }
   if (summary === null) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -1303,6 +1326,7 @@ const EXPORT_COLUMNS = [
 function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, isAdmin, onSave, onReload, showToast, onWipe }) {
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("month");
+  const [clientType, setClientType] = useState("all");
   const [selectedClient, setSelectedClient] = useState(null);
   const [selectedClientRecords, setSelectedClientRecords] = useState([]);
   const [editingCode, setEditingCode] = useState(null);
@@ -1316,6 +1340,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   const [exportOpen, setExportOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [exportCols, setExportCols] = useState(Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, true])));
+  const [exportTypes, setExportTypes] = useState({ numeric: true, alphanumeric: true });
   const [brokerageByCode, setBrokerageByCode] = useState({});
   const [uploads, setUploads] = useState([]);
   const [rollbackId, setRollbackId] = useState(null);
@@ -1367,11 +1392,14 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
     debit: latestDebitByCode[normCode(m.code)] || 0,
   })), [master, brokerageByCode, latestDebitByCode]);
 
-  const filtered = rows.filter((r) => {
+  const isNumericClient = (code) => /^\d+$/.test(String(code || "").trim());
+  const searchedRows = rows.filter((r) => {
     if (!search) return true;
     const s = search.toLowerCase();
     return r.code.toLowerCase().includes(s) || r.name.toLowerCase().includes(s) || (r.dealer || "").toLowerCase().includes(s) || (r.rm || "").toLowerCase().includes(s) || (r.branch || "").toLowerCase().includes(s);
   });
+  const filtered = searchedRows.filter((r) => clientType === "all" || (clientType === "numeric" ? isNumericClient(r.code) : !isNumericClient(r.code)));
+  const exportClientCount = searchedRows.filter((r) => (isNumericClient(r.code) ? exportTypes.numeric : exportTypes.alphanumeric)).length;
 
   const { sorted, sortKey, sortDir, toggle } = useSort(filtered, "brokerage", "desc");
 
@@ -1517,9 +1545,21 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   // on the Dealers tab. Only the columns checked in exportCols are
   // included, in EXPORT_COLUMNS order regardless of check order.
   const exportClients = () => {
-    if (!sorted.length) { showToast("No clients to export", "gold"); return; }
     const cols = EXPORT_COLUMNS.filter((c) => exportCols[c.key]);
     if (!cols.length) { showToast("Select at least one column to export", "gold"); return; }
+    if (!exportTypes.numeric && !exportTypes.alphanumeric) { showToast("Select at least one client type to export", "gold"); return; }
+    const exportSourceRows = searchedRows
+      .filter((r) => (isNumericClient(r.code) ? exportTypes.numeric : exportTypes.alphanumeric))
+      .sort((a, b) => {
+        const av = a[sortKey], bv = b[sortKey];
+        const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av ?? "").localeCompare(String(bv ?? ""));
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+    if (!exportSourceRows.length) { showToast("No matching clients to export", "gold"); return; }
+    const typeLabel = exportTypes.numeric && exportTypes.alphanumeric
+      ? "SW and KOTAK clients together"
+      : exportTypes.numeric ? "SW clients" : "KOTAK clients";
+    if (!window.confirm(`Export ${exportSourceRows.length} ${typeLabel}?`)) return;
     const raw = (r) => ({
       code: r.code,
       name: r.name,
@@ -1530,15 +1570,17 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
       brokerage: Math.round(r.brokerage * 100) / 100,
       debit: Math.round(r.debit * 100) / 100,
     });
-    const exportRows = sorted.map((r) => {
+    const exportRows = exportSourceRows.map((r) => {
       const values = raw(r);
       return Object.fromEntries(cols.map((c) => [c.label, values[c.key]]));
     });
     const ws = XLSX.utils.json_to_sheet(exportRows);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Clients");
+    const bothTypes = exportTypes.numeric && exportTypes.alphanumeric;
+    XLSX.utils.book_append_sheet(wb, ws, bothTypes ? "SW + KOTAK Clients" : exportTypes.numeric ? "SW Clients" : "KOTAK Clients");
     const searchPart = search ? `_${search.replace(/[^a-z0-9]+/gi, "_")}` : "";
-    XLSX.writeFile(wb, `clients_${period}${searchPart}.xlsx`);
+    const typePart = bothTypes ? "sw_kotak_merged" : exportTypes.numeric ? "sw" : "kotak";
+    XLSX.writeFile(wb, `clients_${typePart}_${period}${searchPart}.xlsx`);
     showToast(`Exported ${exportRows.length} client(s)`);
     setExportOpen(false);
   };
@@ -1546,12 +1588,26 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-        <div style={{ display: "flex", gap: 6 }}>
-          {["month", "quarter", "year", "all"].map((p) => (
-            <button key={p} onClick={() => setPeriod(p)} style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${period === p ? TEAL : LINE}`, background: period === p ? TEAL_SOFT : "#fff", color: period === p ? TEAL : INK_SOFT, fontSize: 12.5, fontWeight: 700, cursor: "pointer", textTransform: "capitalize" }}>
-              {p === "all" ? "All time" : p}
-            </button>
-          ))}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["month", "quarter", "year", "all"].map((p) => (
+              <button key={p} onClick={() => setPeriod(p)} style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${period === p ? TEAL : LINE}`, background: period === p ? TEAL_SOFT : "#fff", color: period === p ? TEAL : INK_SOFT, fontSize: 12.5, fontWeight: 700, cursor: "pointer", textTransform: "capitalize" }}>
+                {p === "all" ? "All time" : p}
+              </button>
+            ))}
+          </div>
+          <div style={{ width: 1, height: 22, background: LINE }} />
+          <div role="group" aria-label="Filter clients by code type" style={{ display: "flex", gap: 6 }}>
+            {[
+              ["all", "All clients"],
+              ["numeric", "SW"],
+              ["alphanumeric", "KOTAK"],
+            ].map(([value, label]) => (
+              <button key={value} onClick={() => setClientType(value)} aria-pressed={clientType === value} style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${clientType === value ? TEAL : LINE}`, background: clientType === value ? TEAL_SOFT : "#fff", color: clientType === value ? TEAL : INK_SOFT, fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div className="dt-search-wrap" style={{ position: "relative" }}>
@@ -1579,6 +1635,17 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
 
       {exportOpen && isAdmin && (
         <Card style={{ padding: 16 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 10 }}>Client types to export</div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 16 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: INK_SOFT, cursor: "pointer" }}>
+              <input type="checkbox" checked={exportTypes.numeric} onChange={(e) => setExportTypes({ ...exportTypes, numeric: e.target.checked })} />
+              SW clients
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: INK_SOFT, cursor: "pointer" }}>
+              <input type="checkbox" checked={exportTypes.alphanumeric} onChange={(e) => setExportTypes({ ...exportTypes, alphanumeric: e.target.checked })} />
+              KOTAK clients
+            </label>
+          </div>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginBottom: 10 }}>Columns to export</div>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
             {EXPORT_COLUMNS.map((c) => (
@@ -1594,7 +1661,7 @@ function ClientsTab({ master, targets, latestDebitByCode, dealerNames, rmNames, 
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={exportClients} style={{ display: "flex", gap: 6, alignItems: "center", padding: "9px 16px", borderRadius: 8, border: "none", background: TEAL, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-              <Download size={14} /> Download ({sorted.length} client{sorted.length === 1 ? "" : "s"})
+              <Download size={14} /> Download ({exportClientCount} client{exportClientCount === 1 ? "" : "s"})
             </button>
             <button onClick={() => setExportCols(Object.fromEntries(EXPORT_COLUMNS.map((c) => [c.key, true])))} style={{ padding: "9px 14px", borderRadius: 8, border: `1px solid ${LINE}`, background: "#fff", color: INK_SOFT, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
               Select all

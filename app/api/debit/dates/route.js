@@ -12,11 +12,9 @@ export async function GET() {
 
   // Admins see every debit report date — one indexed DISTINCT query.
   if (session.user.role === "ADMIN") {
-    const rows = await prisma.debitRecord.findMany({
-      distinct: ["date"],
-      select: { date: true },
-      orderBy: { date: "desc" },
-    });
+    // SQL DISTINCT — prisma's findMany({ distinct }) dedupes in memory after
+    // fetching every row, which gets very slow as the table grows.
+    const rows = await prisma.$queryRaw`SELECT DISTINCT date FROM "DebitRecord" ORDER BY date DESC`;
     return NextResponse.json(rows.map((r) => r.date));
   }
 

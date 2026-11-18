@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 /** @type {import('next').NextConfig} */
 
@@ -15,6 +16,8 @@ function buildVersion() {
     return "dev";
   }
 }
+
+const appVersion = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version;
 
 // Content-Security-Policy prevents XSS-escalation, external script injection,
 // and data exfiltration via injected fetch/XHR calls.
@@ -44,7 +47,8 @@ const securityHeaders = [
 const nextConfig = {
   reactStrictMode: true,
   env: {
-    NEXT_PUBLIC_APP_VERSION: buildVersion(),
+    NEXT_PUBLIC_APP_VERSION: appVersion,
+    NEXT_PUBLIC_BUILD_VERSION: buildVersion(),
   },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];

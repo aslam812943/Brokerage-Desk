@@ -66,6 +66,8 @@ model DailyRecord {
   // duplicate-source guard) filters by date AND source together.
   @@index([date, source])
   @@index([codeNorm])
+  // Viewer-scoped period reads filter by normalized client code and date.
+  @@index([codeNorm, date])
 }
 
 model DebitRecord {

@@ -34,39 +34,35 @@ export async function GET(req) {
     allowedCodeNorms = clients.map((c) => c.codeNorm).filter(Boolean);
     if (!allowedCodeNorms.length) return NextResponse.json({ hasData: false });
   }
-  const scopedWhere = allowedCodeNorms ? { codeNorm: { in: allowedCodeNorms } } : {};
 
-  const latest = await prisma.dailyRecord.findFirst({
-    where: scopedWhere,
-    orderBy: { date: "desc" },
-    select: { date: true },
-  });
-  if (!latest) return NextResponse.json({ hasData: false });
-  const latestDate = latest.date;
-
-  const prev = await prisma.dailyRecord.findFirst({
-    where: { ...scopedWhere, date: { lt: latestDate } },
-    orderBy: { date: "desc" },
-    select: { date: true },
-    distinct: ["date"],
-  });
-  const prevDate = prev?.date ?? null;
-
-  const last30 = await prisma.dailyRecord.findMany({
-    where: scopedWhere,
-    distinct: ["date"],
-    select: { date: true },
-    orderBy: { date: "desc" },
-    take: 30,
-  });
-  const last30Dates = last30.map((r) => r.date).sort(); // ascending, for the chart
+  // One distinct-date lookup supplies latest, previous and chart dates.
+  // These were previously three sequential round trips to the remote DB.
+  // Targets is independent, so fetch it alongside the date lookup.
+  // NOTE: must be SQL DISTINCT, not prisma findMany({ distinct }) — Prisma
+  // applies `distinct` in memory, which pulled every DailyRecord row (800k+)
+  // over the network just to find 30 dates (~90s, starving the pool → 500s).
+  const dateScopeSql = allowedCodeNorms?.length
+    ? Prisma.sql`WHERE "codeNorm" IN (${Prisma.join(allowedCodeNorms)})`
+    : Prisma.empty;
+  const [recentDates, targets] = await Promise.all([
+    prisma.$queryRaw`
+      SELECT DISTINCT date FROM "DailyRecord"
+      ${dateScopeSql}
+      ORDER BY date DESC
+      LIMIT 30
+    `,
+    prisma.targets.findUnique({ where: { id: 1 } }),
+  ]);
+  if (!recentDates.length) return NextResponse.json({ hasData: false });
+  const latestDate = recentDates[0].date;
+  const prevDate = recentDates[1]?.date ?? null;
+  const last30Dates = recentDates.map((r) => r.date).sort(); // ascending, for the chart
 
   const [y, m0] = latestDate.split("-").map(Number).map((n, i) => (i === 1 ? n - 1 : n));
   const mStart = isoDate(y, m0, 1);
   const qStart = isoDate(y, Math.floor(m0 / 3) * 3, 1);
   const yStart = isoDate(y, 0, 1);
 
-  const targets = await prisma.targets.findUnique({ where: { id: 1 } });
   const kotakSharePct = targets?.kotakSharePct ?? 85;
   const rmSplitPct = targets?.rmSplitPct ?? 50;
   const privilegeSharePct = targets?.privilegeSharePct ?? 50;

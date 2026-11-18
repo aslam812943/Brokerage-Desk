@@ -82,8 +82,8 @@ export async function GET() {
   // be a sequential latest->prev chain plus a separate 3-query batch. This
   // (and folding the two heavy month-wide raw-SQL scans below into one) is
   // what actually overloaded the connection pool last time: 8 round trips
-  // per tab-open, several of them full-month table scans, on a pool sized
-  // for 3 concurrent connections total.
+  // per tab-open, several of them full-month table scans, on the then-small
+  // shared connection pool.
   const [dateRows, targetsRow, mappedCounts, holidays] = await Promise.all([
     prisma.$queryRaw`SELECT DISTINCT date FROM "DailyRecord" ORDER BY date DESC LIMIT 2`,
     prisma.targets.findUnique({ where: { id: 1 } }),

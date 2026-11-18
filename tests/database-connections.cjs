@@ -21,8 +21,10 @@ test('runtime uses transaction pooling only for Supabase shared session endpoint
   for (const value of ['postgresql://a:b@localhost:5432/db', 'postgresql://a:b@db.project.supabase.co:5432/postgres', 'postgresql://a:b@aws-0-region.pooler.supabase.com:6543/postgres']) assert.equal(runtimeDatabaseUrl(value), value);
   assert.equal(runtimeDatabaseUrl(undefined), undefined);
   const config = databasePoolConfig(original);
-  assert.equal(config.max, 2);
-  assert.equal(config.connectionTimeoutMillis, 10000);
+  assert.equal(config.max, 5);
+  assert.equal(config.idleTimeoutMillis, 60000);
+  assert.equal(config.connectionTimeoutMillis, 30000);
+  assert.equal(config.maxLifetimeSeconds, 300);
 });
 
 test('login hides database failures while preserving credential checks', async () => {
